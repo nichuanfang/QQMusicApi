@@ -5,7 +5,7 @@ from typing import Any, Literal
 from .utils.network import NO_PROCESSOR, api_request
 
 
-def get_cover(mid: str, size: Literal[150, 300, 500, 800] = 300) -> str:
+async def get_cover(mid: str, size: Literal[150, 300, 500, 800] = 300) -> str:
     """获取专辑封面链接
 
     Args:
