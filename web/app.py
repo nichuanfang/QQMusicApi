@@ -106,7 +106,10 @@ async def _api_web(
     try:
         # 凭证处理
         credential = qqmusic_api.Credential.from_cookies_dict(request.cookies)
-        qqmusic_api.get_session().credential = credential
+        # 请求头处理
+        enable_sign = request.headers.get("X-Enable-Sign", "false").lower() in ("true", "1", "yes")
+        enable_cache = request.headers.get("X-Enable-Cache", "true").lower() in ("true", "1", "yes")
+        qqmusic_api.get_custom_session(enable_sign=enable_sign, enable_cache=enable_cache).credential = credential
     except Exception:
         return ApiResponse.error(
             errors="无效的用户凭证", message="Unauthorized", status_code=status.HTTP_401_UNAUTHORIZED
