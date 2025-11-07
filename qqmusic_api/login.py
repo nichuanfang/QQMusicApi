@@ -19,8 +19,68 @@ from .utils.network import ApiRequest
 from .utils.session import get_session
 
 
-async def check_expired() -> bool:
+async def check_expired(credential:Credential) -> bool:
     """检查凭据是否过期
+
+    Args:
+        credential: 用户凭证
+    """
+    api = ApiRequest(
+        "music.UserInfo.userInfoServer",
+        "GetLoginUserInfo",
+        params={},
+        credential=credential,
+        cacheable=False,
+    )
+
+    try:
+        await api()
+        return False
+    except CredentialExpiredError:
+        return True
+
+
+async def refresh_cookies(credential: Credential) -> bool:
+    """刷新 Cookies
+
+    Note:
+        刷新无效 cookie 需要 `refresh_key` 和 `refresh_token` 字段
+
+    Args:
+        credential: 用户凭证
+
+    Returns:
+        是否刷新成功
+    """
+    params = {
+        "refresh_key": credential.refresh_key,
+        "refresh_token": credential.refresh_token,
+        "musickey": credential.musickey,
+        "musicid": credential.musicid,
+    }
+
+    api = ApiRequest[[], dict[str, Any]](
+        "music.login.LoginServer",
+        "Login",
+        common={"tmeLoginType": str(credential.login_type)},
+        params=params,
+        credential=credential,
+        cacheable=False,
+    )
+
+    try:
+        resp = await api()
+        c = credential.from_cookies_dict(resp)
+        credential.__dict__.update(c.__dict__)
+        return True
+    except CredentialExpiredError:
+        return False
+
+# ====================api专用=======================#
+
+
+async def api_check_expired() -> bool:
+    """检查凭据是否过期(api)
 
     Args:
         credential: 用户凭证
@@ -40,8 +100,8 @@ async def check_expired() -> bool:
         return True
 
 
-async def refresh_cookies() -> bool:
-    """刷新 Cookies
+async def api_refresh_cookies() -> dict[str, str]:
+    """刷新 Cookies(api)
 
     Note:
         刷新无效 cookie 需要 `refresh_key` 和 `refresh_token` 字段
@@ -72,11 +132,12 @@ async def refresh_cookies() -> bool:
     try:
         resp = await api()
         c = credential.from_cookies_dict(resp)
-        credential.__dict__.update(c.__dict__)
-        return True
-    except CredentialExpiredError:
-        return False
+        return c.__dict__
+    except CredentialExpiredError as e:
+        return e.__dict__
 
+
+# ===========================================#
 
 class QRCodeLoginEvents(Enum):
     """二维码登录状态
