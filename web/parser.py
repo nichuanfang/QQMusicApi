@@ -22,8 +22,7 @@ class Parser:
         self.errors = []
 
         # 禁止访问的模块
-        # self.not_allowed_modules = ["login"]
-        self.not_allowed_modules = []
+        self.not_allowed_modules = ["login"]
 
     def _check_module_permission(self):
         """检查模块访问权限"""
