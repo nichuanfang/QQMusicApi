@@ -19,7 +19,7 @@ from .utils.network import ApiRequest
 from .utils.session import get_session
 
 
-async def check_expired(credential: Credential) -> bool:
+async def check_expired() -> bool:
     """检查凭据是否过期
 
     Args:
@@ -29,7 +29,7 @@ async def check_expired(credential: Credential) -> bool:
         "music.UserInfo.userInfoServer",
         "GetLoginUserInfo",
         params={},
-        credential=credential,
+        credential=get_session().credential,
         cacheable=False,
     )
 
@@ -40,7 +40,7 @@ async def check_expired(credential: Credential) -> bool:
         return True
 
 
-async def refresh_cookies(credential: Credential) -> bool:
+async def refresh_cookies() -> bool:
     """刷新 Cookies
 
     Note:
@@ -52,6 +52,7 @@ async def refresh_cookies(credential: Credential) -> bool:
     Returns:
         是否刷新成功
     """
+    credential = get_session().credential
     params = {
         "refresh_key": credential.refresh_key,
         "refresh_token": credential.refresh_token,
