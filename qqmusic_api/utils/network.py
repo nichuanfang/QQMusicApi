@@ -1,17 +1,17 @@
 """网络请求"""
 
+import copy
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Coroutine
-from typing import Any, ClassVar, Generic, ParamSpec, TypedDict, TypeVar, cast
+from typing import Any, ClassVar, Generic, ParamSpec, TypeVar, cast
 
 import httpx
 import orjson as json
-from typing_extensions import override
+from typing_extensions import TypedDict, override
 
 from ..exceptions import CredentialExpiredError, ResponseCodeError, SignInvalidError
-from .common import calc_md5
 from .credential import Credential
 from .session import Session, get_session
 from .sign import sign
@@ -36,12 +36,23 @@ def api_request(
     verify: bool = False,
     ignore_code: bool = False,
     process_bool: bool = True,
-    cache_ttl: int | None = None,
-    cacheable: bool = True,
-    exclude_params: list[str] | None = None,
     catch_error_code: list[int] | None = None,
 ):
-    """API请求"""
+    """API请求装饰器.
+
+    用于将普通函数转换为 `ApiRequest` 实例的工厂函数.
+
+    Args:
+        module: 模块名称 (e.g. `music.trackInfo.UniformRuleCtrl`).
+        method: 调用方法名称 (e.g. `CgiGetTrackInfo`).
+        verify: 是否验证凭证有效性.如果为 `True`,请求前会检查凭证是否过期,过期则抛出异常.
+        ignore_code: 是否忽略业务状态码检查.如果为 `True`,将跳过 `code != 0` 的验证.
+        process_bool: 是否转换布尔值.如果为 `True`,参数中的 `bool` 值会自动转换为 `int` (`0`/`1`).
+        catch_error_code: 视为成功的错误码列表.当响应 `code` 在此列表中时,不会抛出异常.
+
+    Returns:
+        一个装饰器,将函数转换为返回 `ApiRequest` 的可调用对象.
+    """
 
     def decorator(
         api_func: Callable[_P, Coroutine[None, None, tuple[dict[Any, Any], Callable[[dict[str, Any]], _R]]]],
@@ -53,9 +64,6 @@ def api_request(
             verify=verify,
             ignore_code=ignore_code,
             process_bool=process_bool,
-            cacheable=cacheable,
-            cache_ttl=cache_ttl,
-            exclude_params=exclude_params,
             catch_error_code=catch_error_code,
         )
 
@@ -86,7 +94,6 @@ class BaseRequest(ABC):
         self._credential = credential
         self.verify = verify
         self.ignore_code = ignore_code
-        self.cache = self.session._cache
 
     @property
     def session(self) -> Session:
@@ -133,13 +140,21 @@ class BaseRequest(ABC):
             )
         return common
 
-    def _set_cookies(self, credential: Credential):
+    @staticmethod
+    def build_cookies(credential: Credential) -> httpx.Cookies | None:
+        """根据凭证生成 cookies"""
         if credential.has_musicid() and credential.has_musickey():
             cookies = httpx.Cookies()
             cookies.set("uin", str(credential.musicid), domain=".qq.com")
             cookies.set("qqmusic_key", credential.musickey, domain=".qq.com")
             cookies.set("qm_keyst", credential.musickey, domain=".qq.com")
             cookies.set("tmeLoginType", str(credential.login_type), domain=".qq.com")
+            return cookies
+        return None
+
+    def _set_cookies(self, credential: Credential):
+        cookies = self.build_cookies(credential)
+        if cookies:
             self.session.cookies = cookies
 
     @abstractmethod
@@ -177,7 +192,10 @@ class BaseRequest(ABC):
 
 
 class ApiRequest(BaseRequest, Generic[_P, _R]):
-    """API 请求处理器"""
+    """API 请求处理器.
+
+    封装单个 API 请求的构建、发送和处理逻辑.
+    """
 
     def __init__(
         self,
@@ -192,42 +210,33 @@ class ApiRequest(BaseRequest, Generic[_P, _R]):
         verify: bool = False,
         ignore_code: bool = False,
         process_bool: bool = True,
-        cache_ttl: int | None = None,
-        cacheable: bool = True,
-        exclude_params: list[str] | None = None,
         catch_error_code: list[int] | None = None,
     ) -> None:
+        """初始化 ApiRequest.
+
+        Args:
+            module: 模块名.
+            method: 方法名.
+            api_func: 被装饰的原始 API 函数
+            params: 请求参数字典.
+            common: 公共参数字典.
+            credential: 请求凭证.
+            verify: 是否验证凭证.
+            ignore_code: 是否忽略错误码.
+            process_bool: 是否处理布尔值.
+            catch_error_code: 捕获的错误码列表.
+        """
         super().__init__(common, credential, verify, ignore_code)
         self.module = module
         self.method = method
         self.params = params or {}
         self.api_func = api_func
-        self.proceduce_bool = process_bool
+        self.process_bool = process_bool
         self.processor: Callable[[dict[str, Any]], Any] = NO_PROCESSOR
-        self.cacheable = cacheable
-        self.cache_ttl = cache_ttl
-        self.exclude_params = exclude_params or []
         self.catch_error_code = catch_error_code or []
 
-    def copy(self) -> "ApiRequest[_P, _R]":
-        """创建当前 ApiRequest 实例的副本"""
-        req = ApiRequest[_P, _R](
-            module=self.module,
-            method=self.method,
-            api_func=self.api_func,
-            params=self.params.copy(),
-            common=self._common.copy(),
-            credential=self.credential,
-            verify=self.verify,
-            ignore_code=self.ignore_code,
-            process_bool=self.proceduce_bool,
-            cacheable=self.cacheable,
-            cache_ttl=self.cache_ttl,
-            exclude_params=self.exclude_params.copy(),
-            catch_error_code=self.catch_error_code,
-        )
-        req.processor = self.processor
-        return req
+    def copy(self) -> "ApiRequest[_P, _R]":  # noqa: D102
+        return copy.deepcopy(self)
 
     @override
     def build_request_data(self) -> dict[str, Any]:
@@ -236,7 +245,7 @@ class ApiRequest(BaseRequest, Generic[_P, _R]):
     @property
     def data(self) -> dict[str, Any]:
         """API 请求数据"""
-        if self.proceduce_bool:
+        if self.process_bool:
             params = {k: int(v) if isinstance(v, bool) else v for k, v in self.params.items()}
         else:
             params = self.params
@@ -246,15 +255,6 @@ class ApiRequest(BaseRequest, Generic[_P, _R]):
             "method": self.method,
             "param": params,
         }
-
-    def _generate_cache_key(self) -> str:
-        params = self.params.copy()
-        for key in self.exclude_params:
-            params.pop(key, None)
-        if self.credential:
-            params["credential"] = f"{self.credential.musicid}{self.credential.musickey}"
-        sorted_params = json.dumps(params, option=json.OPT_SORT_KEYS)
-        return calc_md5(sorted_params)
 
     @override
     async def _process_response(self, resp: httpx.Response) -> dict[str, Any]:
@@ -302,29 +302,27 @@ class ApiRequest(BaseRequest, Generic[_P, _R]):
             instance._common.update(params.pop("common", {}))
             instance.params.update(params)
             instance.processor = processor
-        key = instance._generate_cache_key()
-        if self.session.enable_cache and self.cacheable:
-            if cache_data := await self.cache.get(key):
-                return cache_data
         resp = await instance.request()
         resp = cast(_R, instance.processor(await instance._process_response(resp)))
-        if self.session.enable_cache and self.cacheable:
-            await self.cache.set(key, resp, ttl=self.cache_ttl)
         return resp
 
     def __repr__(self) -> str:
         return f"<ApiRequest {self.module}.{self.method}>"
 
 
-class RequestItem(TypedDict):
-    """请求 Item"""
+TReq = TypeVar("TReq")
+TProc = TypeVar("TProc")
+
+
+class RequestItem(Generic[TReq, TProc], TypedDict):
+    """请求 Item (支持泛型)"""
 
     id: int
     key: str
-    request: ApiRequest
+    request: TReq
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
-    processor: Callable[[dict[str, Any]], Any] | None
+    processor: Callable[[dict[str, Any]], TProc] | None
 
 
 class RequestGroup(BaseRequest):
@@ -334,8 +332,15 @@ class RequestGroup(BaseRequest):
         self,
         common: dict[str, Any] | None = None,
         credential: Credential | None = None,
-        limit: int = 30,
+        limit: int = 20,
     ):
+        """初始化 RequestGroup.
+
+        Args:
+            common: 组级公共参数,将合并到每个子请求中.
+            credential: 组级凭证,将应用于所有子请求.
+            limit: 单次请求的最大子请求数量.超过此数量会自动分批发送.
+        """
         super().__init__(common, credential)
         self._requests: list[RequestItem] = []
         self.limit = limit
@@ -343,7 +348,13 @@ class RequestGroup(BaseRequest):
         self._results = []
 
     def add_request(self, request: ApiRequest[_P, _R], *args: _P.args, **kwargs: _P.kwargs) -> None:
-        """添加请求,自动生成唯一键"""
+        """添加请求到组.
+
+        Args:
+            request: `ApiRequest` 实例或被 `@api_request` 装饰的函数.
+            *args: 传递给 API 函数的位置参数.
+            **kwargs: 传递给 API 函数的关键字参数.
+        """
         base_key = f"{request.module}.{request.method}"
         self._key_counter[base_key] += 1
         count = self._key_counter[base_key]
@@ -377,8 +388,6 @@ class RequestGroup(BaseRequest):
                     data = req_item["processor"](req_data.get("data", req_data))
                 else:
                     data = req_data.get("data", req_data)
-                if self.session.enable_cache and req.cacheable:
-                    await self.cache.set(req._generate_cache_key(), data, ttl=req.cache_ttl)
                 self._results[req_item["id"]] = data
         except json.JSONDecodeError:
             self._results = [{"data": resp.text}]
@@ -400,26 +409,12 @@ class RequestGroup(BaseRequest):
         data.update(merged_data)
         return data
 
-    async def _get_cache(self):
-        keys = [req["request"]._generate_cache_key() for req in self._requests if req["request"].cacheable]
-        cache = self.cache
-        cache_data = await cache.multi_get(keys)
-        remove_index = []
-        for idx, data in enumerate(cache_data):
-            if data:
-                self._results[idx] = data
-                remove_index.append(idx)
-        self._requests = [req for idx, req in enumerate(self._requests) if idx not in remove_index]
-
     async def _execute(self) -> list[Any]:
         """执行合并请求并返回各请求结果"""
         if not self._requests:
             return []
         self._results = [None] * len(self._requests)
         await self._prepare_request()
-        if self.session.enable_cache:
-            await self._get_cache()
-
         if not self._requests:
             return self._results
         resp = await self.request()
@@ -427,7 +422,13 @@ class RequestGroup(BaseRequest):
         return self._results
 
     async def execute(self) -> list[Any]:
-        """执行合并请求"""
+        """执行合并请求。
+
+        如果请求数量超过 `limit`,会自动分批执行并合并结果。
+
+        Returns:
+            list[Any]: 请求结果列表
+        """
         if not self._requests:
             return []
 

@@ -1,10 +1,7 @@
 """用户相关 API
 
-传入有效 credential 获取他人的信息会更完整但会留痕,且部分 API 不会验证
-credential 是否有效,强制 credential 的 API 在 credential 失效时会报错
-
-Credential 使用优先级:
-传入的 Credential > Session 的 Credential
+传入有效的 credential 获取他人信息时,返回内容会更完整,但会留下访问痕迹。
+部分 API 不会验证 credential 是否有效,只有强制要求 credential 的接口在 credential 失效时才会报错。
 """
 
 from typing import Any, cast
@@ -32,7 +29,7 @@ async def get_musicid(euin: str):
     )
 
 
-@api_request("music.UnifiedHomepage.UnifiedHomepageSrv", "GetHomepageHeader", cacheable=False)
+@api_request("music.UnifiedHomepage.UnifiedHomepageSrv", "GetHomepageHeader")
 async def get_homepage(euin: str, *, credential: Credential | None = None):
     """获取用户主页信息(包含音乐基因、歌单等)
 
@@ -43,13 +40,13 @@ async def get_homepage(euin: str, *, credential: Credential | None = None):
     return {"uin": euin, "IsQueryTabDetail": 1}, NO_PROCESSOR
 
 
-@api_request("VipLogin.VipLoginInter", "vip_login_base", verify=True, cacheable=False)
+@api_request("VipLogin.VipLoginInter", "vip_login_base", verify=True)
 async def get_vip_info(*, credential: Credential | None = None):
-    """获取当前登录账号的 VIP 信息(需要凭证)"""
+    """获取当前登录账号的 VIP 信息"""
     return {}, NO_PROCESSOR
 
 
-@api_request("music.concern.RelationList", "GetFollowSingerList", verify=True, cacheable=False)
+@api_request("music.concern.RelationList", "GetFollowSingerList", verify=True)
 async def get_follow_singers(euin: str, page: int = 1, num: int = 10, *, credential: Credential | None = None):
     """获取关注歌手列表
 
@@ -65,7 +62,7 @@ async def get_follow_singers(euin: str, page: int = 1, num: int = 10, *, credent
     }
 
 
-@api_request("music.concern.RelationList", "GetFansList", verify=True, cacheable=False)
+@api_request("music.concern.RelationList", "GetFansList", verify=True)
 async def get_fans(euin: str, page: int = 1, num: int = 10, *, credential: Credential | None = None):
     """获取粉丝列表
 
@@ -81,7 +78,7 @@ async def get_fans(euin: str, page: int = 1, num: int = 10, *, credential: Crede
     }
 
 
-@api_request("music.homepage.Friendship", "GetFriendList", verify=True, cacheable=False)
+@api_request("music.homepage.Friendship", "GetFriendList", verify=True)
 async def get_friend(page: int = 1, num: int = 10, *, credential: Credential | None = None):
     """获取好友列表
 
@@ -96,7 +93,7 @@ async def get_friend(page: int = 1, num: int = 10, *, credential: Credential | N
     }, lambda data: {"total": len(data.get("Friends", [])), "list": data.get("Friends", [])}
 
 
-@api_request("music.concern.RelationList", "GetFollowUserList", verify=True, cacheable=False)
+@api_request("music.concern.RelationList", "GetFollowUserList", verify=True)
 async def get_follow_user(euin: str, page: int = 1, num: int = 10, *, credential: Credential | None = None):
     """获取关注用户列表
 
@@ -112,7 +109,7 @@ async def get_follow_user(euin: str, page: int = 1, num: int = 10, *, credential
     }
 
 
-@api_request("music.musicasset.PlaylistBaseRead", "GetPlaylistByUin", cacheable=False)
+@api_request("music.musicasset.PlaylistBaseRead", "GetPlaylistByUin")
 async def get_created_songlist(uin: str, *, credential: Credential | None = None):
     """获取创建的歌单
 
@@ -123,7 +120,7 @@ async def get_created_songlist(uin: str, *, credential: Credential | None = None
     return {"uin": uin}, lambda data: cast(list[dict[str, Any]], data.get("v_playlist", []))
 
 
-@api_request("music.srfDissInfo.DissInfo", "CgiGetDiss", cacheable=False)
+@api_request("music.srfDissInfo.DissInfo", "CgiGetDiss")
 async def get_fav_song(euin: str, page: int = 1, num: int = 10, *, credential: Credential | None = None):
     """获取收藏歌曲
 
@@ -156,7 +153,7 @@ async def get_fav_song(euin: str, page: int = 1, num: int = 10, *, credential: C
     }, _processsor
 
 
-@api_request("music.musicasset.PlaylistFavRead", "CgiGetPlaylistFavInfo", cacheable=False)
+@api_request("music.musicasset.PlaylistFavRead", "CgiGetPlaylistFavInfo")
 async def get_fav_songlist(euin: str, page: int = 1, num: int = 10, *, credential: Credential | None = None):
     """获取收藏歌单
 
@@ -169,7 +166,7 @@ async def get_fav_songlist(euin: str, page: int = 1, num: int = 10, *, credentia
     return {"uin": euin, "offset": (page - 1) * num, "size": num}, NO_PROCESSOR
 
 
-@api_request("music.musicasset.AlbumFavRead", "CgiGetAlbumFavInfo", cacheable=False)
+@api_request("music.musicasset.AlbumFavRead", "CgiGetAlbumFavInfo")
 async def get_fav_album(euin: str, page: int = 1, num: int = 10, *, credential: Credential | None = None):
     """获取收藏专辑
 
@@ -182,7 +179,7 @@ async def get_fav_album(euin: str, page: int = 1, num: int = 10, *, credential: 
     return {"euin": euin, "offset": (page - 1) * num, "size": num}, NO_PROCESSOR
 
 
-@api_request("music.musicasset.MVFavRead", "getMyFavMV_v2", verify=True, cacheable=False)
+@api_request("music.musicasset.MVFavRead", "getMyFavMV_v2", verify=True)
 async def get_fav_mv(euin: str, page: int = 1, num: int = 10, *, credential: Credential | None = None):
     """获取收藏 MV
 
@@ -195,7 +192,7 @@ async def get_fav_mv(euin: str, page: int = 1, num: int = 10, *, credential: Cre
     return {"encuin": euin, "pagesize": num, "num": page - 1}, NO_PROCESSOR
 
 
-@api_request("music.recommend.UserProfileSettingSvr", "GetProfileReport", cacheable=False)
+@api_request("music.recommend.UserProfileSettingSvr", "GetProfileReport")
 async def get_music_gene(euin: str, *, credential: Credential | None = None):
     """获取音乐基因数据
 
