@@ -91,7 +91,6 @@ async def api_check_expired() -> bool:
         "GetLoginUserInfo",
         params={},
         credential=get_session().credential,
-        cacheable=False,
     )
 
     try:
@@ -127,7 +126,6 @@ async def api_refresh_cookies() -> dict[str, str]:
         common={"tmeLoginType": str(credential.login_type)},
         params=params,
         credential=credential,
-        cacheable=False,
     )
 
     try:

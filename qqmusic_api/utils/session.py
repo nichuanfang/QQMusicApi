@@ -83,12 +83,12 @@ def get_session() -> Session:
     return session
 
 
-def get_custom_session(enable_sign: bool, enable_cache: bool) -> Session:
+def get_custom_session(enable_sign: bool) -> Session:
     """获取当前上下文自定义的 Session"""
     session = _session_context.get()
     if session is None:
         logger.info("创建新的默认Session")
-        session = Session(enable_sign=enable_sign, enable_cache=enable_cache)
+        session = Session(enable_sign=enable_sign)
         _session_context.set(session)
     return session
 
