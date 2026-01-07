@@ -22,7 +22,10 @@ class Parser:
         self.errors = []
 
         # 禁止访问的模块
-        self.not_allowed_modules = ["login"]
+        # self.not_allowed_modules = ["login"]
+        
+        # 内部调用允许访问login模块
+        self.not_allowed_modules = []
 
     def _check_module_permission(self):
         """检查模块访问权限"""
