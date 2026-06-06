@@ -186,3 +186,7 @@ pyrightconfig.json
 .sisyphus/
 
 .worktrees/
+
+dev/accounts.toml
+dev/config.toml
+dev/data/
