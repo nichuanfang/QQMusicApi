@@ -1,0 +1,13 @@
+services:
+  qq-music-api:
+    build:
+      context: ..
+      dockerfile: ./web/Dockerfile
+    image: qm
+    container_name: qm
+    environment:
+      - TZ=Asia/Shanghai
+    expose:
+      - 8080
+    network_mode: host
+    restart: always
