@@ -187,6 +187,6 @@ pyrightconfig.json
 
 .worktrees/
 
+dev/data
 dev/accounts.toml
 dev/config.toml
-dev/data/
