@@ -88,6 +88,8 @@ class VersionPolicy:
                 device.model,
                 device.version.sdk,
                 device.fingerprint,
+                device.session_uid,
+                device.session_sid,
             )
             if platform == Platform.ANDROID
             else (),
@@ -113,7 +115,9 @@ class VersionPolicy:
                 QIMEI36=qimei["q36"] if qimei is not None else "",
                 OpenUDID=guid,
                 udid=guid,
+                uid=device.session_uid,
                 OpenUDID2=guid,
+                sid=device.session_sid,
                 aid=device.android_id,
                 os_ver=device.version.release,
                 phonetype=device.model,
