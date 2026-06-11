@@ -10,7 +10,9 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 import qqmusic_api
 from qqmusic_api import Client
@@ -25,7 +27,7 @@ from qqmusic_api.core.exceptions import (
 
 from .core.auth import startup_credential_health_check
 from .core.cache import MemoryBackend, RedisBackend
-from .core.config import SecurityConfig, settings
+from .core.config import PROJECT_ROOT, SecurityConfig, settings
 from .core.credential_store import ACCOUNT_CONFIG_FILE, CredentialStore, load_account_configs
 from .core.deps import WebServices
 from .core.response import ErrorResponse, error_response
@@ -42,6 +44,8 @@ _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     429: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
 }
+
+_DEVICE_PATH = str(PROJECT_ROOT / "web" / "data" / "device.json")
 _HTTP_ERROR_MESSAGES = {
     400: "请求错误",
     401: "未授权",
@@ -76,7 +80,7 @@ async def _lifespan(app: FastAPI):
     services: WebServices = app.state.services
     try:
         logger.info("初始化 SDK Client...")
-        services.client = Client(device_path="web/data/device.json")
+        services.client = Client(device_path=_DEVICE_PATH)
         logger.debug("SDK Client 初始化完成")
 
         logger.debug("配置全局凭证设置...")
@@ -121,7 +125,7 @@ def _configure_cors(app: FastAPI) -> None:
     if config.cors_allow_credentials and "*" in config.cors_allow_origins:
         raise RuntimeError("允许跨域凭据时 cors_allow_origins 不能包含通配符 *")
 
-    logger.info(f"配置 CORS, 允许来源: {config.cors_allow_origins}")
+    logger.info("配置 CORS, 允许来源: %s", config.cors_allow_origins)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.cors_allow_origins,
@@ -182,7 +186,7 @@ def create_app() -> FastAPI:
     app.middleware("http")(apply_security_middleware)
 
     @app.middleware("http")
-    async def _log_access(request: Request, call_next):
+    async def _log_access(request: Request, call_next: RequestResponseEndpoint) -> Response:
         start = perf_counter()
         response = await call_next(request)
         elapsed_ms = (perf_counter() - start) * 1000
@@ -193,29 +197,34 @@ def create_app() -> FastAPI:
         client_host = request.client.host if request.client is not None else "-"
         status_suffix = f" {status_phrase}" if status_phrase else ""
         logger.info(
-            f"HTTP {request.method} {request.url.path} -> {response.status_code}{status_suffix} "
-            f"({elapsed_ms:.1f} ms) from {client_host}"
+            "HTTP %s %s -> %d%s (%.1f ms) from %s",
+            request.method,
+            request.url.path,
+            response.status_code,
+            status_suffix,
+            elapsed_ms,
+            client_host,
         )
         return response
 
     _configure_cors(app)
 
     @app.exception_handler(BaseApiException)
-    async def _handle_base_api_exception(_request: Request, exc: BaseApiException):
+    async def _handle_base_api_exception(_request: Request, exc: BaseApiException) -> JSONResponse:
         return error_response(
             status_code=_base_api_exception_status_code(exc),
             msg=str(exc),
         )
 
     @app.exception_handler(HTTPException)
-    async def _handle_http_exception(_request: Request, exc: HTTPException):
+    async def _handle_http_exception(_request: Request, exc: HTTPException) -> JSONResponse:
         return error_response(
             status_code=exc.status_code,
             msg=_http_exception_message(exc),
         )
 
     @app.exception_handler(RequestValidationError)
-    async def _handle_validation_error(_request: Request, exc: RequestValidationError):
+    async def _handle_validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
         return error_response(
             status_code=422,
             msg="请求参数校验失败",

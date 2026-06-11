@@ -1,11 +1,12 @@
 """API 客户端核心实现. 整合网络传输、鉴权与业务模块访问."""
 
-import uuid
 from collections import defaultdict
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
+import anyio
 from niquests import AsyncSession, AsyncTokenBucketLimiter, PreparedRequest
+from niquests.exceptions import RequestException
 from niquests.models import Response
 from niquests.typing import AsyncHookType, ProxyType, TLSClientCertType, TLSVerifyType
 from tarsio import TarsDict
@@ -21,6 +22,7 @@ from .exceptions import (
     CredentialExpiredError,
     GlobalApiError,
     HTTPError,
+    NetworkError,
     RatelimitedError,
 )
 from .request import Request, RequestResultT, _build_result
@@ -99,14 +101,71 @@ class Client:
 
         self._device_store = DeviceManager(device_path)
 
-        self._guid = uuid.uuid4().hex
         self._version_policy: VersionPolicy = DEFAULT_VERSION_POLICY
+        self._session_lock = anyio.Lock()
+        self._session_initialized = False
         self._qimei_manager = QimeiManager(
             device_store=self._device_store,
             app_version=self._version_policy.get_qimei_app_version(),
             sdk_version=self._version_policy.get_qimei_sdk_version(),
             session=self._session,
         )
+
+    async def _ensure_session(self) -> None:
+        async with self._session_lock:
+            if self._session_initialized:
+                return
+            device = await self._device_store.get_device()
+            if device.session_uid and device.session_sid:
+                self._session_initialized = True
+                return
+
+            finalcomm = self._version_policy.build_comm(
+                platform=Platform.ANDROID,
+                credential=self.credential,
+                device=device,
+                qimei=cast("dict[str, str]", await self._qimei_manager.get_cached()),
+                guid=device.open_udid,
+            )
+            payload: dict[str, Any] = {
+                "comm": finalcomm,
+                "req_0": {
+                    "module": "music.getSession.session",
+                    "method": "GetSession",
+                    "param": {
+                        "uid": device.session_uid or "",
+                        "vkey": 0,
+                        "caller": 0,
+                    },
+                },
+            }
+            user_agent = await self._get_user_agent(Platform.ANDROID)
+            try:
+                resp = await self._session.post(
+                    "https://u.y.qq.com/cgi-bin/musicu.fcg",
+                    json=payload,
+                    headers={"User-Agent": user_agent},
+                    proxies=self.proxies,
+                    hooks=self.hooks,
+                    cert=self.cert,
+                    verify=self.verify,
+                )
+                await self._session.gather(resp)
+            except RequestException as exc:
+                raise NetworkError(str(exc)) from exc
+            if resp.status_code != 200:
+                raise HTTPError(
+                    f"HTTP 请求状态码异常: {resp.status_code}",
+                    status_code=cast("int", resp.status_code),
+                )
+
+            resp_data = resp.json()
+            session_data = resp_data["req_0"]["data"]["session"]
+            device.session_uid = str(session_data["uid"])
+            device.session_sid = session_data["sid"]
+            device.session_vkey = session_data.get("vkey")
+            await self._device_store.save_device()
+            self._session_initialized = True
 
     @cached_property
     def comment(self) -> "CommentApi":
@@ -261,18 +320,21 @@ class Client:
             headers["User-Agent"] = await self._get_user_agent(platform)
         kwargs["headers"] = headers
 
-        resp = await self._session.request(
-            method,
-            url,
-            **kwargs,
-            proxies=self.proxies,
-            hooks=self.hooks,
-            cert=self.cert,
-            verify=self.verify,
-        )
-        if not lazy:
-            await self._session.gather(resp)
-        return resp
+        try:
+            resp = await self._session.request(
+                method,
+                url,
+                **kwargs,
+                proxies=self.proxies,
+                hooks=self.hooks,
+                cert=self.cert,
+                verify=self.verify,
+            )
+            if not lazy:
+                await self._session.gather(resp)
+            return resp
+        except RequestException as exc:
+            raise NetworkError(str(exc)) from exc
 
     async def request_api(
         self,
@@ -285,39 +347,68 @@ class Client:
         lazy: bool = False,
     ) -> Response:
         """发送 API 请求."""
-        platform = Platform.ANDROID if is_jce else platform or self.platform
+        target_platform = Platform.ANDROID if is_jce else platform or self.platform
+        if target_platform == Platform.ANDROID:
+            await self._ensure_session()
+        device = await self._device_store.get_device()
         finalcomm = self._version_policy.build_comm(
-            platform=platform or self.platform,
+            platform=target_platform,
             credential=credential or self.credential,
-            device=await self._device_store.get_device(),
+            device=device,
             qimei=cast("dict[str, str]", await self._qimei_manager.get_cached())
-            if platform == Platform.ANDROID
+            if target_platform == Platform.ANDROID
             else None,
-            guid=self._guid,
+            guid=device.open_udid,
         )
         if comm:
             finalcomm.update(comm)
 
-        user_agent = await self._get_user_agent(platform)
+        user_agent = await self._get_user_agent(target_platform)
 
-        if is_jce:
-            for k, v in finalcomm.items():
-                if not isinstance(v, str):
-                    finalcomm[k] = str(v)
-            content = JceRequest(
-                finalcomm,
-                {
-                    f"req_{idx}": JceRequestItem(
-                        module=req["module"],
-                        method=req["method"],
-                        param=TarsDict(cast("dict[int, Any]", req["param"])),
-                    )
-                    for idx, req in enumerate(data)
-                },
-            ).encode()
+        try:
+            if is_jce:
+                for k, v in finalcomm.items():
+                    if not isinstance(v, str):
+                        finalcomm[k] = str(v)
+                content = JceRequest(
+                    finalcomm,
+                    {
+                        f"req_{idx}": JceRequestItem(
+                            module=req["module"],
+                            method=req["method"],
+                            param=TarsDict(cast("dict[int, Any]", req["param"])),
+                        )
+                        for idx, req in enumerate(data)
+                    },
+                ).encode()
+                resp = await self._session.post(
+                    "http://u.y.qq.com/cgi-bin/musicw.fcg",
+                    data=content,
+                    headers={"User-Agent": user_agent},
+                    proxies=self.proxies,
+                    hooks=self.hooks,
+                    cert=self.cert,
+                    verify=self.verify,
+                )
+                if not lazy:
+                    await self._session.gather(resp)
+                return resp
+
+            payload: dict[str, Any] = {
+                "comm": finalcomm,
+            }
+            params = {}
+            for idx, req in enumerate(data):
+                payload[f"req_{idx}"] = {
+                    "module": req["module"],
+                    "method": req["method"],
+                    "param": req["param"] if req["preserve_bool"] else bool_to_int(req["param"]),
+                }
+
             resp = await self._session.post(
-                "http://u.y.qq.com/cgi-bin/musicw.fcg",
-                data=content,
+                "https://u.y.qq.com/cgi-bin/musicu.fcg",
+                json=payload,
+                params=params,
                 headers={"User-Agent": user_agent},
                 proxies=self.proxies,
                 hooks=self.hooks,
@@ -326,33 +417,10 @@ class Client:
             )
             if not lazy:
                 await self._session.gather(resp)
+
             return resp
-
-        payload: dict[str, Any] = {
-            "comm": finalcomm,
-        }
-        params = {}
-        for idx, req in enumerate(data):
-            payload[f"req_{idx}"] = {
-                "module": req["module"],
-                "method": req["method"],
-                "param": req["param"] if req["preserve_bool"] else bool_to_int(req["param"]),
-            }
-
-        resp = await self._session.post(
-            "https://u.y.qq.com/cgi-bin/musicu.fcg",
-            json=payload,
-            params=params,
-            headers={"User-Agent": user_agent},
-            proxies=self.proxies,
-            hooks=self.hooks,
-            cert=self.cert,
-            verify=self.verify,
-        )
-        if not lazy:
-            await self._session.gather(resp)
-
-        return resp
+        except RequestException as exc:
+            raise NetworkError(str(exc)) from exc
 
     @overload
     async def gather(
@@ -451,7 +519,10 @@ class Client:
                 )
                 batch_responses.append((batch_indices, response_task))
 
-        await self._session.gather(*(resp for _, resp in batch_responses))
+        try:
+            await self._session.gather(*(resp for _, resp in batch_responses))
+        except RequestException as exc:
+            raise NetworkError(str(exc)) from exc
 
         results: list[Any] = [_SENTINEL] * len(requests)
 
