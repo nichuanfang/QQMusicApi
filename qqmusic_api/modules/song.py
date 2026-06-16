@@ -19,6 +19,7 @@ from ..models.song import (
     GetSongDetailResponse,
     GetSongLabelsResponse,
     GetSongUrlsResponse,
+    HasSheetMusicResponse,
     QuerySongResponse,
 )
 from ..utils import get_guid
@@ -277,6 +278,8 @@ class SongApi(ApiModule):
     def get_detail(self, value: int | str):
         """获取歌曲详细信息.
 
+        固定使用 Web 平台.
+
         Args:
             value: 歌曲 ID 或 MID.
         """
@@ -399,17 +402,77 @@ class SongApi(ApiModule):
             response_model=GetProducerResponse,
         )
 
-    def get_sheet(self, mid: str):
+    def get_sheet(self, mid: str, ttype: int = 0):
         """获取歌曲相关曲谱.
+
+        Args:
+            mid: 歌曲 MID.
+            begin: 起始偏移.
+            end: 返回数量.
+            ttype: 曲谱来源类型. 0=用户上传, 1=引擎/AI曲谱, 2=虫虫钢琴.
+        """
+        if ttype == 2:
+            return self._build_request(
+                module="music.mir.SheetMusicSvr",
+                method="GetChongChongSheetMusic",
+                param={"songMid": mid, "begin": 0, "end": 100, "scoreType": -1, "ttype": 1},
+                response_model=GetSheetResponse,
+                comm={
+                    "g_tk": 5381,
+                    "uin": "",
+                    "format": "json",
+                    "inCharset": "utf-8",
+                    "outCharset": "utf-8",
+                    "notice": 0,
+                    "platform": "h5",
+                    "needNewCode": 1,
+                },
+                sign=True,
+                override_comm=True,
+                allow_error_codes={10007},
+                parse_on_allow=True,
+            )
+        score_type = -473 if ttype == 1 else -1
+        return self._build_request(
+            module="music.mir.SheetMusicSvr",
+            method="GetMoreSheetMusic",
+            param={"songMid": mid, "begin": 0, "end": 100, "scoreType": score_type, "ttype": ttype},
+            response_model=GetSheetResponse,
+            comm={
+                "g_tk": 5381,
+                "uin": "",
+                "format": "json",
+                "inCharset": "utf-8",
+                "outCharset": "utf-8",
+                "notice": 0,
+                "needNewCode": 1,
+            },
+            override_comm=True,
+            allow_error_codes={10007},
+            parse_on_allow=True,
+        )
+
+    def has_sheet(self, mid: str):
+        """检查歌曲是否有曲谱.
 
         Args:
             mid: 歌曲 MID.
         """
         return self._build_request(
             module="music.mir.SheetMusicSvr",
-            method="GetMoreSheetMusic",
-            param={"songmid": mid, "scoreType": -1},
-            response_model=GetSheetResponse,
+            method="HasSheetMusic",
+            param={"songMid": mid},
+            response_model=HasSheetMusicResponse,
+            comm={
+                "g_tk": 5381,
+                "uin": "",
+                "format": "json",
+                "inCharset": "utf-8",
+                "outCharset": "utf-8",
+                "notice": 0,
+                "needNewCode": 1,
+            },
+            override_comm=True,
         )
 
     def get_fav_num(self, song_ids: list[int]):
