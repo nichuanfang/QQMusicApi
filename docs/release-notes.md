@@ -1,4 +1,100 @@
 
+## What's Changed
+
+### 功能更新
+
+* **(web)** 添加 has_sheet 路由 ([9e7a143](https://github.com/L-1124/QQMusicApi/commit/9e7a1439ff597ae43a4ef99d88ec08ee32889b9a)) by [@L-1124](https://github.com/L-1124)
+
+### 文档更新
+
+* 完善快速开始文档并新增多篇核心教程 ([d6143cd](https://github.com/L-1124/QQMusicApi/commit/d6143cdc047ebeb4963b061680a21103ba3d58d4)) by [@L-1124](https://github.com/L-1124)
+
+### 贡献者
+
+* @L-1124
+* @github-actions[bot]
+
+## [[0.6.6](https://github.com/L-1124/QQMusicApi/compare/v0.6.5..v0.6.6)] - 2026-06-13
+
+### Bug 修复
+
+* **(song)** 修复 get_sheet 获取无曲谱歌曲时触发异常的问题 ([f47a643](https://github.com/L-1124/QQMusicApi/commit/f47a643e956ef52a532b0017ea8365cb2537593d)) by [@L-1124](https://github.com/L-1124)
+* **(web)** 修复评论适配器与凭证锁内存泄漏，优化基础设施 ([66a6cc4](https://github.com/L-1124/QQMusicApi/commit/66a6cc4901b1acd99b0c4541f88a1d8e0a9b0888)) by [@L-1124](https://github.com/L-1124)
+
+### Revert
+
+* **(models)** 回退 BaseModel 额外字段处理策略为 extra='ignore' ([f6691e0](https://github.com/L-1124/QQMusicApi/commit/f6691e078b87a45f5178d7a018f9a1bd0d5e391a)) by [@L-1124](https://github.com/L-1124)
+
+### 功能更新
+
+* **(client)** 支持 zzc 请求签名 ([eb4eb66](https://github.com/L-1124/QQMusicApi/commit/eb4eb66f5c20c2adbe430bbfb11140d0431d48d5)) by [@L-1124](https://github.com/L-1124)
+* **(core)** 支持在使用 allow_error_codes 放行时强制解析模型 ([fac2a71](https://github.com/L-1124/QQMusicApi/commit/fac2a71bfb2f2ea700d59215a439fc65b40461f2)) by [@L-1124](https://github.com/L-1124)
+* **(core)** 支持通过 override_comm 彻底替代通用请求载荷 ([72edb4f](https://github.com/L-1124/QQMusicApi/commit/72edb4f3cc96a063643f2d58b92d41722ad95e8f)) by [@L-1124](https://github.com/L-1124)
+* **(song)** 添加新的曲谱相关 API和相关示例 ([9c461db](https://github.com/L-1124/QQMusicApi/commit/9c461dbdff15acf804ae047a7bc827cd6b1e7dd5)) by [@L-1124](https://github.com/L-1124)
+* **(song)** 支持 HasSheetMusic 接口检查歌曲是否有曲谱 ([94723ff](https://github.com/L-1124/QQMusicApi/commit/94723ffda911f74d680f7f661e9436bba74c3612)) by [@L-1124](https://github.com/L-1124)
+* **(web)** 补充 requirements.txt ([d806214](https://github.com/L-1124/QQMusicApi/commit/d80621477635f6e0ad3589116cbb97c75e31dc6c)) by [@L-1124](https://github.com/L-1124)
+
+### 性能优化
+
+* **(qrc)** 优化自定义 3DES 解密性能并补充测试 ([0b808a5](https://github.com/L-1124/QQMusicApi/commit/0b808a5537643f2c3bd0ef94e5c72263ec378bb8)) by [@L-1124](https://github.com/L-1124)
+
+### 构建配置
+
+* **(web)** 在 Dockerfile 运行命令中添加 --no-sync 防止容器运行期同步 dev 依赖 ([cf1fbc5](https://github.com/L-1124/QQMusicApi/commit/cf1fbc5523c83b21734d82763a89aef450825674)) by [@L-1124](https://github.com/L-1124)
+
+### 贡献者
+
+* @L-1124
+* @github-actions[bot]
+
+## [[0.6.5](https://github.com/L-1124/QQMusicApi/compare/v0.6.4..v0.6.5)] - 2026-06-12
+
+### Bug 修复
+
+* **(core)** 开启 allow_incoming_cookies=False 防止上下请求的 cookies 污染 ([1cd1b69](https://github.com/L-1124/QQMusicApi/commit/1cd1b69338ffa2f26409480490b18b9c9080a29e)) by [@L-1124](https://github.com/L-1124)
+* **(login)** `Platform.WEB` 的 `check_expired` 总是返回 True ([f0b4533](https://github.com/L-1124/QQMusicApi/commit/f0b4533e7c172b6cb5b0556fbd7ff13e8b20f4c7)) by [@L-1124](https://github.com/L-1124)
+
+### 贡献者
+
+* @L-1124
+* @github-actions[bot]
+
+## [[0.6.4](https://github.com/L-1124/QQMusicApi/compare/v0.6.3..v0.6.4)] - 2026-06-12
+
+### Bug 修复
+
+* **(models)** 修复没有 musickey 时误判为 QQ 登录的问题 ([9b122a7](https://github.com/L-1124/QQMusicApi/commit/9b122a77f418d85f1926da889846c61a55bf70a2)) by [@L-1124](https://github.com/L-1124)
+
+### 功能更新
+
+* **(models)** 修改 BaseModel 的 model_config 设置，允许额外字段 ([12a2334](https://github.com/L-1124/QQMusicApi/commit/12a2334dbde580930b167c728998b6310508597e)) by [@L-1124](https://github.com/L-1124)
+
+### 贡献者
+
+* @L-1124
+* @github-actions[bot]
+
+## [[0.6.3](https://github.com/L-1124/QQMusicApi/compare/v0.6.2..v0.6.3)] - 2026-06-12
+
+### Bug 修复
+
+* **(models)** 修复 jsonpath 通配字段单条解包与收藏 MV subcode 别名不匹配 ([b31f802](https://github.com/L-1124/QQMusicApi/commit/b31f802bad06489315b9b1d3e15f141bcbcde121)) by [@jinzhongjia](https://github.com/jinzhongjia) in [#259](https://github.com/L-1124/QQMusicApi/pull/259)
+* **(tests)** 修复 handle_unavailable_api_errors fixture 无法正确捕获测试执行期异常并跳过的问题 ([412d6cf](https://github.com/L-1124/QQMusicApi/commit/412d6cf17d18c97f4fb0ebff9be86f3c86566120)) by [@L-1124](https://github.com/L-1124)
+
+### 功能更新
+
+* **(user)** get_vip_info 响应模型补充会员身份字段 ([6504373](https://github.com/L-1124/QQMusicApi/commit/650437317290c4905bc81fefed169a9e725f7c29)) by [@jinzhongjia](https://github.com/jinzhongjia) in [#258](https://github.com/L-1124/QQMusicApi/pull/258)
+
+### 功能重构
+
+* **(models)** field_validator → Annotated + BeforeValidator ([5505ed1](https://github.com/L-1124/QQMusicApi/commit/5505ed1fd1630f4e7803a86eb40c7eaf113f8382)) by [@L-1124](https://github.com/L-1124)
+
+### 贡献者
+
+* @L-1124
+* @jinzhongjia [#259](https://github.com/L-1124/QQMusicApi/pull/259)
+* @github-actions[bot]
+
 ## [[0.6.2](https://github.com/L-1124/QQMusicApi/compare/v0.6.1..v0.6.2)] - 2026-06-08
 
 ### Bug 修复

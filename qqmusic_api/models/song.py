@@ -1,7 +1,10 @@
 """Song API 返回模型定义."""
 
+from typing import Annotated
+
 from pydantic import Field
 
+from ._validator import NoneToEmptyList
 from .base import MV, Singer, Song, SongList
 from .request import Response
 
@@ -295,7 +298,7 @@ class SheetMusic(Response):
 
     score_mid: str = Field(alias="scoreMID")
     score_name: str = Field(alias="scoreName")
-    pic_urls: list[str] = Field(alias="picURLs")
+    pic_urls: Annotated[list[str], NoneToEmptyList] = Field(default_factory=list, alias="picURLs")
     version: str
     tonality: int
     score_type: int = Field(alias="scoreType")
@@ -327,8 +330,26 @@ class GetSheetResponse(Response):
         total_map: 各曲谱类型对应的数量聚合.
     """
 
-    result: list[SheetMusic]
+    result: Annotated[list[SheetMusic], NoneToEmptyList]
     total_map: dict[str, int] = Field(alias="totalMap")
+
+
+class HasSheetMusicResponse(Response):
+    """检查歌曲曲谱存在状态响应.
+
+    Attributes:
+        has_guitar: 是否有 AI 生成曲谱 (尤克里里等).
+        has_more: 是否有更多来源的曲谱.
+        has_ldy: 是否有六线谱/吉他谱, 同时决定五线谱数据类型.
+        has_qrcx: 是否有标准五线谱/曲谱.
+        has_chong_chong: 是否有虫虫钢琴谱.
+    """
+
+    has_guitar: bool = Field(alias="hasGuitar")
+    has_more: bool = Field(alias="hasMore")
+    has_ldy: bool = Field(alias="hasLDY")
+    has_qrcx: bool = Field(alias="hasQRCX")
+    has_chong_chong: bool = Field(alias="hasChongChong")
 
 
 class GetFavNumResponse(Response):
