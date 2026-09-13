@@ -11,31 +11,32 @@
 
 ```text
 模块方法
-  -> self._build_request(...)
-  -> Request
+  -> self._build_cgi(...) / self._build_http(...)
+  -> BaseRequest 描述符
   -> await request
   -> Client.execute(request)
-  -> Client.request_api(...)  (根据 request.is_jce 分发改用 JCE 或 JSON 协议)
-  -> Client._build_result(...)
-  -> 返回原始 dict / TarsDict 或 Pydantic 模型
+  -> ApiContext 注入环境与凭证
+  -> Session.post(...) / Session.request(...)
+  -> Request._parse_response(...)
+  -> 返回原始 dict 或 Pydantic 模型
 ```
 
 ### 批量并发请求
 
 ```text
 多个模块方法
-  -> self._build_request(...)
-  -> Request 列表
+  -> self._build_cgi(...)
+  -> BaseRequest 描述符列表
     -> Client.gather(requests)
-    -> 按协议、平台、公共参数和凭证分组
+    -> 按协议、平台、公共参数和凭证配置键自动分组
     -> 每组按 batch_size 拆分为批量请求
-    -> 依次调用 Client.request_api(..., lazy=True) 生成响应任务
-    -> 使用客户端内部的 multiplexed AsyncSession 并发执行这些任务（self._session.gather）
-    -> 按 req_n 解析每个响应项
-    -> 按输入顺序返回结果
+    -> 依次发起合并的多参 CGI 请求（req_0, req_1...）
+    -> 使用客户端内部的 Session 并发执行这些任务（self._session.gather）
+    -> 统一解包解析每个响应项
+    -> 按输入顺序返回结果列表
 ```
 
-`gather` 的分组边界由 `Request._group_key` 决定。只有协议类型、显式平台、公共参数和凭证相同的请求才会合并到同一个批量请求中。
+`gather` 的分组边界由 `BaseRequest._group_key` 决定。只有协议类型、显式平台、公共参数和凭证相同的请求才会安全地合并到同一个批量请求中。
 
 ## 编写新的 API
 
@@ -55,7 +56,7 @@ class FooApi(ApiModule):
 
     def get_something(self, id: int):
         """获取某项数据."""
-        return self._build_request(
+        return self._build_cgi(
             module="music.foo.Svc",
             method="GetSomething",
             param={"id": id},
@@ -66,6 +67,7 @@ class FooApi(ApiModule):
 # qqmusic_api/core/client.py
 from functools import cached_property
 
+
 class Client:
     @cached_property
     def foo(self) -> "FooApi":
@@ -75,84 +77,78 @@ class Client:
 
 ### 添加新的请求方法
 
-API 方法返回 `Request` 对象，不直接发起请求。使用 `self._build_request(...)` 工厂方法构建：
+API 方法返回 `BaseRequest` 描述符对象，并不立即发起请求。对于标准 CGI 风格的 RPC 请求，使用 `self._build_cgi(...)` 工厂方法构建：
 
 ```python
 def get_detail(self, song_id: int):
     """获取歌曲详情."""
-    return self._build_request(
-        module="music.songDetail",       # 接口所属模块
-        method="GetDetail",              # 方法名
-        param={"songid": song_id},       # 业务参数
+    return self._build_cgi(
+        module="music.songDetail",  # 接口所属模块
+        method="GetDetail",  # 方法名
+        param={"songid": song_id},  # 业务参数
     )
 ```
 
-对于非标准 CGI 接口（如直接 GET 请求），使用 `self._request(...)`：
+对于非标准 CGI 接口（如直接 GET 请求、获取网页或二维码），使用 `self._build_http(...)`：
 
 ```python
 async def quick_search(self, keyword: str) -> dict[str, Any]:
     """快速搜索 (直接返回解析后的 JSON 数据)."""
-    resp = await self._request(
+    resp = await self._build_http(
         "GET",
         "https://c.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg",
         params={"key": keyword},
     )
-    resp.raise_for_status()
-    return resp.json()["data"]
+    return resp["data"]
 ```
 
-### `_build_request` 参数说明
+### `_build_cgi` 参数说明
 
-| 参数             | 类型                        | 说明                                                      |
-|------------------|-----------------------------|-----------------------------------------------------------|
-| `module`         | `str`                       | 接口所属模块名                                            |
-| `method`         | `str`                       | 方法名                                                    |
-| `param`          | `dict`                      | 业务参数                                                  |
-| `response_model` | `type[BaseModel]` 或 `None` | 响应模型，为 None 时返回原始 dict                         |
-| `comm`           | `dict` 或 `None`            | 附加的公共参数                                            |
-| `override_comm`  | `bool`                      | 为 True 时 `comm` 完全替代自动生成的参数；为 False 时合并 |
-| `credential`     | `Credential` 或 `None`      | 覆盖本次请求的凭证                                        |
-| `platform`       | `Platform` 或 `None`        | 覆盖本次请求的平台                                        |
-| `is_jce`         | `bool`                      | 是否作为 JCE (Tars) 二进制协议发送                        |
-| `preserve_bool`  | `bool`                      | 是否保留布尔值原样（默认转为 0/1 整型）                   |
-| `sign`           | `bool`                      | 是否对请求进行签名                                        |
-| `pager_meta`     | `PagerMeta` 或 `None`       | 分页元数据，提供后返回 `PaginatedRequest`                 |
-| `refresh_meta`   | `RefreshMeta` 或 `None`     | 换一批元数据，提供后返回 `RefreshableRequest`             |
+| 参数             | 类型                        | 说明                                                                                                        |
+|------------------|-----------------------------|-------------------------------------------------------------------------------------------------------------|
+| `module`         | `str`                       | 接口所属模块名                                                                                              |
+| `method`         | `str`                       | 方法名                                                                                                      |
+| `param`          | `dict`                      | 业务参数                                                                                                    |
+| `response_model` | `type[BaseModel]` 或 `None` | 响应模型，为 None 时返回原始 dict                                                                           |
+| `comm`           | `dict` 或 `None`            | 附加的公共参数                                                                                              |
+| `override_comm`  | `bool`                      | 为 True 时 `comm` 完全替代自动生成的参数；为 False 时合并                                                   |
+| `credential`     | `Credential` 或 `None`      | 覆盖本次请求的凭证                                                                                          |
+| `platform`       | `Platform` 或 `None`        | 覆盖本次请求的平台                                                                                          |
+| `preserve_bool`  | `bool`                      | 是否保留布尔值原样（默认转为 0/1 整型）                                                                     |
+| `sign`           | `bool`                      | 是否对请求进行签名                                                                                          |
+| `require_login`  | `bool`                      | 是否在执行时强制校验用户登录态                                                                              |
+| `pager_strategy` | `PagerStrategy` 或 `None`   | 分页策略，提供后返回 `PaginatedCgiRequest`；可链式调用 `.with_extractor()` 提升为 `ItemPaginatedCgiRequest` |
 
-### `client.request` 参数说明
+### `_build_http` 参数说明
 
-`client.request` 是底层 HTTP 请求方法，自动装配凭证 Cookies 和平台 User-Agent：
+`_build_http` 用于构建标准 HTTP 请求描述符，自动装配凭证 Cookies 和平台 User-Agent：
 
-| 参数         | 类型                   |                                                                              说明 |
-|--------------|------------------------|----------------------------------------------------------------------------------:|
-| `method`     | `str`                  |                                                   HTTP 方法，如 `"GET"`、`"POST"` |
-| `url`        | `str`                  |                                                                          请求地址 |
-| `credential` | `Credential` 或 `None` |                                            覆盖本次请求的凭证，默认使用客户端凭证 |
-| `platform`   | `Platform` 或 `None`   |                                            覆盖本次请求的平台，默认使用客户端平台 |
-| `lazy`       | `bool`                 |                                                  是否延迟发送请求（用于批量并发） |
-| `**kwargs`   |                        | 透传给底层 `niquests` 的参数（`params`、`json`、`data`、`headers`、`cookies` 等） |
+| 参数            | 类型                   |                                                                              说明 |
+|-----------------|------------------------|----------------------------------------------------------------------------------:|
+| `method`        | `str`                  |                                                   HTTP 方法，如 `"GET"`、`"POST"` |
+| `url`           | `str`                  |                                                                          请求地址 |
+| `credential`    | `Credential` 或 `None` |                                            覆盖本次请求的凭证，默认使用客户端凭证 |
+| `disable_parse` | `bool`                 |                      为 True 时不解析 JSON，直接返回原始 `niquests.Response` 对象 |
+| `**kwargs`      |                        | 透传给底层 `niquests` 的参数（`params`、`json`、`data`、`headers`、`cookies` 等） |
 
 !!! note
 
-    `client.request` 返回的是原始 `niquests.Response` 对象，需要手动解析响应。而 `_build_request` 返回的 `Request` 对象支持 `await`，会自动完成响应验证和模型解析。
+    `_build_cgi` 返回 `CgiRequest`，`_build_http` 返回 `HttpRequest`，两者均继承自 `BaseRequest`。它们都支持直接被 `await` 以触发网络请求并自动完成响应验证和模型解析。
 
 常见用法：
 
 ```python
 # GET 请求
-resp = await client.request("GET", "https://example.com/api", params={"key": "value"})
+req = self._build_http("GET", "https://example.com/api", params={"key": "value"})
 
 # POST JSON
-resp = await client.request("POST", "https://example.com/api", json={"key": "value"})
-
-# POST form data
-resp = await client.request("POST", "https://example.com/api", data={"key": "value"})
-
-# 自定义 headers
-resp = await client.request("GET", "https://example.com/api", headers={"X-Custom": "value"})
+req = self._build_http("POST", "https://example.com/api", json={"key": "value"})
 
 # 覆盖凭证
-resp = await client.request("GET", "https://example.com/api", credential=my_credential)
+req = self._build_http("GET", "https://example.com/api", credential=my_credential)
+
+# 返回原始 Response 而非解析 JSON
+req = self._build_http("GET", "https://example.com/api", disable_parse=True)
 ```
 
 ## 响应模型
@@ -175,6 +171,17 @@ class MyResponse(Response):
 ```
 
 `Response` 基类配置了 `frozen=True`（不可变）和 `extra="ignore"`（忽略多余字段）。
+
+!!! warning "Pydantic 默认值规范"
+
+    定义模型时应避免使用 `None` 作为隐式兜底默认值。如果字段可选或为空，应当使用显式的空标量，或通过 `Field(default_factory=...)` 声明：
+    ```python
+    class Album(Response):
+        name: str = ""
+        publish_time: str = ""
+        # 列表必须使用 default_factory
+        singers: list[Singer] = Field(default_factory=list)
+    ```
 
 ### JSONPath 字段映射
 
@@ -221,34 +228,39 @@ class Singer(Response):
 
 ### 需登录的接口
 
-需要登录的接口应通过 `_require_login` 校验凭证：
+需要登录的接口通过 `_build_cgi` 的 `require_login` 参数校验凭证：
 
 ```python
 def get_vip_info(self, *, credential: Credential | None = None):
     """获取 VIP 信息."""
-    target_credential = self._require_login(credential)
-    return self._build_request(
+    return self._build_cgi(
         module="VipLogin.VipLoginInter",
         method="vip_login_base",
         param={},
-        credential=target_credential,
+        credential=credential,
         response_model=UserVipInfoResponse,
+        require_login=True,
     )
 ```
 
-## 翻页与换一批
+> 若接口需要凭证对象的属性（如 `musicid` 等）来构建请求内联参数，
+> 仍可通过 `credential = credential or self._client.credential` 获取并显式验证其有效性。
+
+## 连续翻页与批次刷新
 
 ### 连续翻页
 
-通过 `pager_meta` 声明连续翻页能力，返回的请求对象会暴露 `.paginate()`：
+通过 `pager_strategy` 声明连续翻页能力，建议配合显示 Generic 标注（形如
+`OffsetStrategy[GetSonglistDetailResponse]`）以确保静态类型检查与类型推断的准确性，并通过 `.with_extractor()`
+链式调用绑定实体数据项的提取逻辑：
 
 ```python
-from ..core.pagination import OffsetStrategy, PagerMeta, ResponseAdapter
+from ..core.pagination import OffsetStrategy
 
 
 def get_detail(self, songlist_id: int, num: int = 10, page: int = 1):
     """获取歌单详情."""
-    return self._build_request(
+    return self._build_cgi(
         module="music.srfDissInfo.DissInfo",
         method="CgiGetDiss",
         param={
@@ -257,40 +269,38 @@ def get_detail(self, songlist_id: int, num: int = 10, page: int = 1):
             "song_num": num,
         },
         response_model=GetSonglistDetailResponse,
-        pager_meta=PagerMeta(
-            strategy=OffsetStrategy(offset_key="song_begin", page_size_key="song_num"),
-            adapter=ResponseAdapter(
-                has_more_flag="hasmore",
-                total="total",
-                count=lambda response: len(response.songs),
-            ),
+        pager_strategy=OffsetStrategy[GetSonglistDetailResponse](
+            offset_key="song_begin",
+            page_size_key="song_num",
+            has_more_extractor=lambda response: bool(response.hasmore),
+            total_extractor=lambda response: response.total,
+            count_extractor=lambda response: len(response.songs),
         ),
-    )
+    ).with_extractor(lambda response: response.songs)
 ```
 
-### 换一批
+### 批次刷新 (Batch Refresh)
 
-通过 `refresh_meta` 声明换一批能力，返回的请求对象会暴露 `.refresh()`：
+批次刷新（Batch Refresh）是一种针对推荐或关联接口、支持游标复位与防循环重复游标的特殊游标分页，同样通过 `pager_strategy` 声明：
 
 ```python
-from ..core.pagination import BatchRefreshStrategy, RefreshMeta, ResponseAdapter
+from ..core.pagination import BatchRefreshStrategy
+from ..models.base import MV
 
 
 def get_related_mv(self, songid: int, last_mvid: str | None = None):
     """获取歌曲相关 MV."""
-    return self._build_request(
+    return self._build_cgi(
         module="MvService.MvInfoProServer",
         method="GetSongRelatedMv",
         param={"songid": str(songid), "songtype": 1, "lastmvid": last_mvid or 0},
         response_model=GetRelatedMvResponse,
-        refresh_meta=RefreshMeta(
-            strategy=BatchRefreshStrategy(refresh_key="lastmvid"),
-            adapter=ResponseAdapter(
-                has_more_flag="has_more",
-                cursor=lambda response: response.mv[-1].id if response.mv else None,
-            ),
+        pager_strategy=BatchRefreshStrategy[GetRelatedMvResponse](
+            refresh_key="lastmvid",
+            cursor_extractor=lambda response: response.mv[-1].id if response.mv else None,
+            has_more_extractor=lambda response: bool(response.has_more),
         ),
-    )
+    ).with_extractor(lambda response: response.mv)
 ```
 
 ### 内置策略速查
@@ -301,26 +311,7 @@ def get_related_mv(self, songid: int, last_mvid: str | None = None):
 | `OffsetStrategy`                 |   偏移量滑窗 | `offset_key` + `page_size_key`  |
 | `CursorStrategy`                 | 响应游标回写 | `cursor_key`                    |
 | `MultiFieldContinuationStrategy` |   多字段续翻 | 自定义 `build_next_params` 函数 |
-| `BatchRefreshStrategy`           |       换一批 | `refresh_key`                   |
-
-`pager_meta` 与 `refresh_meta` 不能同时声明。
-
-## JCE (Tars) 协议
-
-部分接口使用 JCE 二进制协议而非 JSON。通过 `is_jce=True` 启用：
-
-```python
-def get_something(self):
-    """获取数据 (JCE 协议)."""
-    return self._build_request(
-        module="music.foo.Svc",
-        method="GetSomething",
-        param={0: "value"},  # JCE 使用整数 key
-        is_jce=True,
-    )
-```
-
-JCE 协议的响应会自动解码为 `TarsDict`。
+| `BatchRefreshStrategy`           |     批次刷新 | `refresh_key`                   |
 
 ## 请求签名
 
@@ -329,7 +320,7 @@ JCE 协议的响应会自动解码为 `TarsDict`。
 ```python
 def get_sheet(self, mid: str):
     """获取曲谱."""
-    return self._build_request(
+    return self._build_cgi(
         module="music.mir.SheetMusicSvr",
         method="GetMoreSheetMusic",
         param={"songMid": mid},
@@ -345,7 +336,7 @@ def get_sheet(self, mid: str):
 
 ```python
 # 合并到自动生成的 comm 中（默认行为）
-self._build_request(
+self._build_cgi(
     ...,
     comm={"extra_key": "value"},
 )
@@ -354,7 +345,7 @@ self._build_request(
 使用 `override_comm=True` 完全替代自动生成的参数：
 
 ```python
-self._build_request(
+self._build_cgi(
     ...,
     comm={
         "g_tk": 5381,
@@ -367,6 +358,20 @@ self._build_request(
     },
     override_comm=True,
 )
+```
+
+## 异常处理
+
+在抛出或处理异常时，应使用项目统一的基于领域驱动（DDD）风格的异常类（继承自 `BaseApiException` 或 `ApiException`
+）。在包装底层异常时，必须使用原生异常链（`raise ... from exc`）保留堆栈追踪：
+
+```python
+from ..core.exceptions import ApiDataError
+
+try:
+    ...
+except KeyError as e:
+    raise ApiDataError("无法解析歌曲信息") from e
 ```
 
 ## 编写测试
@@ -385,7 +390,7 @@ from qqmusic_api import Client
 
 async def test_query_song(client: Client) -> None:
     """测试根据 ID 查询歌曲."""
-    result = await client.song.query_song(["003w2xz20QlUZt"])
+    result = await client.song.query_song([SongQueryInfo(mid="003w2xz20QlUZt")])
     assert result.tracks
     assert result.tracks[0].name
 ```
@@ -395,8 +400,15 @@ async def test_query_song(client: Client) -> None:
 ```python
 @pytest.mark.parametrize("page", [1, 2])
 async def test_general_search(client: Client, page: int) -> None:
-    """测试综合搜索翻页."""
-    result = await client.search.general_search("周杰伦", page=page)
+    """测试综合搜索翻页逻辑."""
+    try:
+        result = await client.search.general_search("周杰伦", page=page)
+    except Exception as e:
+        # 示例：优雅处理网络风控或限流 (需根据实际异常类型调整)
+        if "limit" in str(e).lower() or "risk" in str(e).lower():
+            pytest.skip(f"Triggered rate limit or risk control: {e}")
+        raise
+
     assert result.song.items is not None
 ```
 
@@ -416,7 +428,7 @@ async def test_get_vip_info(authenticated_client: Client) -> None:
 ```python
 async def test_search_paginate(client: Client) -> None:
     """测试搜索分页."""
-    pager = client.search.search_by_type("周杰伦", num=5).paginate(limit=2)
+    pager = client.search.search_by_type("周杰伦", num=5).pager(limit=2)
 
     assert pager.has_more() is True
     first_page = await pager.next()

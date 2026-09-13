@@ -80,7 +80,7 @@ uv run mkdocs serve
 
 * 注释内容包括：模块注释、类注释、函数注释、参数类型注释、返回值注释
 * 注释风格遵循 [Google-style docstrings](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings)
-* 测试函数应包含单行中文 docstring（英文标点）
+* 测试用例必须包含 **单行中文 docstring**，且内部必须使用 **英文标点符号**。
 
 ## 文档规范
 

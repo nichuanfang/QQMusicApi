@@ -1,14 +1,16 @@
 """Web 访问控制与 IP 限流."""
 
 import asyncio
+import logging
 import math
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
-from typing import Any, Literal, cast
+from typing import Literal
 
 from fastapi import FastAPI, Request
+from starlette.background import BackgroundTask, BackgroundTasks
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
@@ -173,7 +175,10 @@ class InMemoryRateLimiter:
         key = (client_ip, window)
         current = self._counters.get(key, 0) + 1
         self._counters[key] = current
-        self._discard_stale_windows(window)
+
+        stale_keys = [k for k in self._counters if k[0] == client_ip and k[1] < window - 1]
+        for k in stale_keys:
+            del self._counters[k]
 
         remaining = max(0, self._capacity - current)
         return RateLimitResult(
@@ -183,11 +188,6 @@ class InMemoryRateLimiter:
             reset_at=reset_at,
             retry_after=retry_after,
         )
-
-    def _discard_stale_windows(self, current_window: int) -> None:
-        stale_keys = [key for key in self._counters if key[1] < current_window]
-        for key in stale_keys:
-            del self._counters[key]
 
 
 class InMemoryConcurrencyLimiter:
@@ -218,16 +218,11 @@ class InMemoryConcurrencyLimiter:
                 self._active -= 1
 
 
-async def _release_after_body(
-    body_iterator: AsyncIterator[bytes],
-    limiter: InMemoryConcurrencyLimiter,
-) -> AsyncIterator[bytes]:
-    """在响应体发送结束后释放并发名额."""
-    try:
-        async for chunk in body_iterator:
-            yield chunk
-    finally:
-        await limiter.release()
+def _is_streaming(response: Response) -> bool:
+    """判断响应是否为流式响应."""
+    return hasattr(response, "body_iterator") and not isinstance(
+        getattr(response, "body_iterator", None), (bytes, bytearray)
+    )
 
 
 async def apply_security_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -271,13 +266,30 @@ async def apply_security_middleware(request: Request, call_next: RequestResponse
     except Exception:
         await concurrency_limiter.release()
         raise
-    response_body = cast("Any", response).body_iterator
-    cast("Any", response).body_iterator = _release_after_body(response_body, concurrency_limiter)
+
+    if _is_streaming(response):
+        task = BackgroundTask(concurrency_limiter.release)
+        if response.background is None:
+            response.background = task
+        elif isinstance(response.background, BackgroundTasks):
+            response.background.add_task(concurrency_limiter.release)
+        else:
+            old = response.background
+            tasks = BackgroundTasks()
+            tasks.add_task(old)
+            tasks.add_task(concurrency_limiter.release)
+            response.background = tasks
+    else:
+        await concurrency_limiter.release()
+
     return response
 
 
 def configure_security(app: FastAPI, config: SecurityConfig) -> None:
     """安装安全组件到应用状态."""
+    if not config.enabled:
+        logging.getLogger(__name__).debug("安全模块未启用, 跳过配置")
+        return
     security = SecurityServices(
         config=config,
         client_ip_resolver=ClientIpResolver(config.trusted_proxy_ips, config.client_ip_header),

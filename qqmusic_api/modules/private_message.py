@@ -3,7 +3,7 @@
 from typing import Any
 
 from ..core import Platform
-from ..core.pagination import MultiFieldContinuationStrategy, PagerMeta, ResponseAdapter
+from ..core.pagination import MultiFieldContinuationStrategy
 from ..models.private_message import (
     PrivateChatEntriesResponse,
     PrivateConfigResponse,
@@ -22,7 +22,9 @@ PRIVATE_MSG_READ_MODULE = "music.privateMsg.PrivateMsgRead"
 PRIVATE_MSG_WRITE_MODULE = "music.privateMsg.PrivateMsgWrite"
 
 
-def _build_session_list_next_params(params: dict[Any, Any], response: PrivateSessionListResponse, _: ResponseAdapter):
+def _build_session_list_next_params(
+    params: dict[str, Any], response: PrivateSessionListResponse
+) -> dict[str, Any] | None:
     """根据最后一个会话构造会话列表下一页参数."""
     if not response.sessions:
         return None
@@ -30,7 +32,9 @@ def _build_session_list_next_params(params: dict[Any, Any], response: PrivateSes
     return {**params, "last_id": last_session.session_id, "last_time": last_session.sort_time}
 
 
-def _build_message_list_next_params(params: dict[Any, Any], response: PrivateMessageListResponse, _: ResponseAdapter):
+def _build_message_list_next_params(
+    params: dict[str, Any], response: PrivateMessageListResponse
+) -> dict[str, Any] | None:
     """根据最后一条消息构造消息列表下一页参数."""
     if not response.messages:
         return None
@@ -67,7 +71,6 @@ class PrivateMessageApi(ApiModule):
             encrypt_from_uin: 超级私信艺人加密 UIN; 优先级高于 fans_flag.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
         params: dict[str, Any] = {
             "last_id": last_id,
             "order": order,
@@ -80,21 +83,20 @@ class PrivateMessageApi(ApiModule):
         elif fans_flag is not None:
             params["FansFlag"] = fans_flag
 
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_READ_MODULE,
             "GetSessionList",
             params,
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateSessionListResponse,
-            pager_meta=PagerMeta(
-                strategy=MultiFieldContinuationStrategy(
-                    _build_session_list_next_params,
-                    context_name="private_message_session_list",
-                ),
-                adapter=ResponseAdapter(has_more_flag=lambda response: response.has_more == 1),
+            pager_strategy=MultiFieldContinuationStrategy[PrivateSessionListResponse](
+                _build_session_list_next_params,
+                has_more_extractor=lambda r: r.has_more == 1,
+                context_name="private_message_session_list",
             ),
-        )
+        ).with_extractor(lambda r: r.sessions)
 
     def delete_session(self, session_id: str, *, super_msg_flag: int = 0, credential: Credential | None = None):
         """删除私信会话.
@@ -104,12 +106,12 @@ class PrivateMessageApi(ApiModule):
             super_msg_flag: 超级私信标记.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_WRITE_MODULE,
             "DeleteSession",
             {"session_id": session_id, "super_msg_flag": super_msg_flag},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateOperationResponse,
         )
@@ -142,7 +144,6 @@ class PrivateMessageApi(ApiModule):
             update_time: 客户端发送消息更新时间.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
         params: dict[str, Any] = {"order": order, "size": size, "flag": flag}
         optional_params = {
             "session_id": session_id,
@@ -154,21 +155,20 @@ class PrivateMessageApi(ApiModule):
         }
         params.update({key: value for key, value in optional_params.items() if value not in (None, "")})
 
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_READ_MODULE,
             "GetMessage",
             params,
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateMessageListResponse,
-            pager_meta=PagerMeta(
-                strategy=MultiFieldContinuationStrategy(
-                    _build_message_list_next_params,
-                    context_name="private_message_list",
-                ),
-                adapter=ResponseAdapter(has_more_flag=lambda response: response.has_more == 1),
+            pager_strategy=MultiFieldContinuationStrategy[PrivateMessageListResponse](
+                _build_message_list_next_params,
+                has_more_extractor=lambda r: r.has_more == 1,
+                context_name="private_message_list",
             ),
-        )
+        ).with_extractor(lambda r: r.messages)
 
     def send_message(
         self,
@@ -206,7 +206,6 @@ class PrivateMessageApi(ApiModule):
             star_send: 是否使用明星超级私信发送接口.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
         params: dict[str, Any] = {
             "last_msg_seq": last_msg_seq,
             "user_id": user_id,
@@ -225,11 +224,12 @@ class PrivateMessageApi(ApiModule):
         }
         params.update({key: value for key, value in optional_params.items() if value not in (None, "")})
 
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_WRITE_MODULE,
             "StarSendSuperMsg" if star_send else "SendMessageAsync",
             params,
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateSendMessageResponse,
         )
@@ -250,12 +250,12 @@ class PrivateMessageApi(ApiModule):
             super_msg_flag: 超级私信标记.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_WRITE_MODULE,
             "DeleteMessage",
             {"session_id": session_id, "msg_id": msg_id, "super_msg_flag": super_msg_flag},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateOperationResponse,
         )
@@ -274,12 +274,12 @@ class PrivateMessageApi(ApiModule):
             super_msg_flag: 超级私信标记.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_WRITE_MODULE,
             "ClearSession",
             {"session_id": session_id, "super_msg_flag": super_msg_flag},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateOperationResponse,
         )
@@ -298,12 +298,12 @@ class PrivateMessageApi(ApiModule):
             config_value: 配置值字符串.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_WRITE_MODULE,
             "SetConfig",
             {"config_type": config_type, "config_value_str": config_value},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateOperationResponse,
         )
@@ -322,12 +322,12 @@ class PrivateMessageApi(ApiModule):
             config_value: 配置值字符串.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_READ_MODULE,
             "GetConfig",
             {"config_type": config_type, "config_value_str": config_value},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateConfigResponse,
         )
@@ -344,12 +344,12 @@ class PrivateMessageApi(ApiModule):
             enc_uin: 加密 UIN.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             "music.privateMsg.MusicianMsgCardSvr",
             "GetMusicianCard",
             {"EncUin": enc_uin},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateMusicianCardResponse,
         )
@@ -374,7 +374,6 @@ class PrivateMessageApi(ApiModule):
             credential: 请求凭证.
             ext: 扩展字段.
         """
-        target_credential = self._require_login(credential)
         params: dict[str, Any] = {
             "target_user_id": target_user_id,
             "msg_type": msg_type,
@@ -383,11 +382,12 @@ class PrivateMessageApi(ApiModule):
         }
         if ext:
             params["ext"] = ext
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_WRITE_MODULE,
             "ActCardMsgCallBack",
             params,
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateOperationResponse,
         )
@@ -410,18 +410,18 @@ class PrivateMessageApi(ApiModule):
             ext: 扩展字段.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
         params = {
             "Scence": scenes,
             "FromUserType": from_user_type,
             "UserID": user_id,
             "Ext": ext,
         }
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_READ_MODULE,
             "GetEntries",
             {key: value for key, value in params.items() if value is not None},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateChatEntriesResponse,
         )
@@ -440,12 +440,12 @@ class PrivateMessageApi(ApiModule):
             msg_ids: 消息 ID 列表.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_READ_MODULE,
             "GetMsgDetails",
             {"SessionID": session_id, "MsgIDs": msg_ids},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateMediaMessageDetailsResponse,
         )
@@ -464,12 +464,12 @@ class PrivateMessageApi(ApiModule):
             encrypt_uin: 加密 UIN.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_WRITE_MODULE,
             "SetAllMsgMardRead",
             {"CmdFlag": cmd_flag, "EncryptUin": encrypt_uin},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateOperationResponse,
         )
@@ -488,12 +488,12 @@ class PrivateMessageApi(ApiModule):
             close: 是否关闭提示.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             PRIVATE_MSG_READ_MODULE,
             "GetSafetyHint",
             {"encUin": enc_uin, "close": close},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
             response_model=PrivateSafetyHintResponse,
         )
@@ -510,12 +510,11 @@ class PrivateMessageApi(ApiModule):
             target_enc_uin: 目标用户加密 UIN.
             credential: 请求凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
-            "music.dazi.DzEntrySrv",
-            "GetFriendFloatingIcon",
-            {"TargetEncuin": target_enc_uin},
-            credential=target_credential,
+        return self._build_cgi(
+            module="music.dazi.DzEntrySrv",
+            method="GetFriendFloatingIcon",
+            param={"TargetEncuin": target_enc_uin},
+            credential=credential,
+            require_login=True,
             platform=Platform.ANDROID,
-            response_model=None,
         )

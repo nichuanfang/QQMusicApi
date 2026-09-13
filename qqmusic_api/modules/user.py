@@ -1,11 +1,12 @@
 """用户相关 API."""
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from ..core.pagination import OffsetStrategy, PagerMeta, PageStrategy, ResponseAdapter
+from ..core.pagination import MultiFieldContinuationStrategy, OffsetStrategy, PageStrategy
 from ..models.request import Credential
 from ..models.songlist import GetSonglistDetailResponse
 from ..models.user import (
+    DislikeListData,
     UserCreatedSonglistResponse,
     UserFavAlbumResponse,
     UserFavMvResponse,
@@ -50,7 +51,7 @@ class UserApi(ApiModule):
                 若客户端凭证不可用则自动使用占位凭证.
         """
         target_credential = self._resolve_placeholder_credential(credential)
-        return self._build_request(
+        return self._build_cgi(
             module="music.UnifiedHomepage.UnifiedHomepageSrv",
             method="GetHomepageHeader",
             param={"uin": euin, "IsQueryTabDetail": 1},
@@ -64,12 +65,12 @@ class UserApi(ApiModule):
         Args:
             credential: 登录凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             module="VipLogin.VipLoginInter",
             method="vip_login_base",
             param={},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             response_model=UserVipInfoResponse,
         )
 
@@ -89,22 +90,21 @@ class UserApi(ApiModule):
             num: 每页返回数量.
             credential: 登录凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             module="music.concern.RelationList",
             method="GetFollowSingerList",
             param={"HostUin": euin, "From": (page - 1) * num, "Size": num},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             response_model=UserRelationListResponse,
-            pager_meta=PagerMeta(
-                strategy=OffsetStrategy(offset_key="From", page_size_key="Size"),
-                adapter=ResponseAdapter(
-                    has_more_flag="has_more",
-                    total="total",
-                    count=lambda response: len(response.users),
-                ),
+            pager_strategy=OffsetStrategy[UserRelationListResponse](
+                offset_key="From",
+                page_size_key="Size",
+                has_more_extractor=lambda r: r.has_more,
+                total_extractor=lambda r: r.total,
+                count_extractor=lambda r: len(r.users),
             ),
-        )
+        ).with_extractor(lambda r: r.users)
 
     def get_fans(
         self,
@@ -122,22 +122,21 @@ class UserApi(ApiModule):
             num: 每页返回数量.
             credential: 登录凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             module="music.concern.RelationList",
             method="GetFansList",
             param={"HostUin": euin, "From": (page - 1) * num, "Size": num},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             response_model=UserRelationListResponse,
-            pager_meta=PagerMeta(
-                strategy=OffsetStrategy(offset_key="From", page_size_key="Size"),
-                adapter=ResponseAdapter(
-                    has_more_flag="has_more",
-                    total="total",
-                    count=lambda response: len(response.users),
-                ),
+            pager_strategy=OffsetStrategy[UserRelationListResponse](
+                offset_key="From",
+                page_size_key="Size",
+                has_more_extractor=lambda r: r.has_more,
+                total_extractor=lambda r: r.total,
+                count_extractor=lambda r: len(r.users),
             ),
-        )
+        ).with_extractor(lambda r: r.users)
 
     def get_friend(
         self,
@@ -153,18 +152,20 @@ class UserApi(ApiModule):
             num: 每页返回数量.
             credential: 登录凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             module="music.homepage.Friendship",
             method="GetFriendList",
             param={"PageSize": num, "Page": page - 1},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             response_model=UserFriendListResponse,
-            pager_meta=PagerMeta(
-                strategy=PageStrategy(page_key="Page", page_size=num, start_page=page - 1),
-                adapter=ResponseAdapter(has_more_flag="has_more"),
+            pager_strategy=PageStrategy[UserFriendListResponse](
+                page_key="Page",
+                page_size=num,
+                start_page=page - 1,
+                has_more_extractor=lambda r: r.has_more,
             ),
-        )
+        ).with_extractor(lambda r: r.friends)
 
     def get_follow_user(
         self,
@@ -182,22 +183,21 @@ class UserApi(ApiModule):
             num: 每页返回数量.
             credential: 登录凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             module="music.concern.RelationList",
             method="GetFollowUserList",
             param={"HostUin": euin, "From": (page - 1) * num, "Size": num},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             response_model=UserRelationListResponse,
-            pager_meta=PagerMeta(
-                strategy=OffsetStrategy(offset_key="From", page_size_key="Size"),
-                adapter=ResponseAdapter(
-                    has_more_flag="has_more",
-                    total="total",
-                    count=lambda response: len(response.users),
-                ),
+            pager_strategy=OffsetStrategy[UserRelationListResponse](
+                offset_key="From",
+                page_size_key="Size",
+                has_more_extractor=lambda r: r.has_more,
+                total_extractor=lambda r: r.total,
+                count_extractor=lambda r: len(r.users),
             ),
-        )
+        ).with_extractor(lambda r: r.users)
 
     def get_created_songlist(self, uin: int, *, credential: Credential | None = None):
         """获取用户创建的歌单列表.
@@ -206,7 +206,7 @@ class UserApi(ApiModule):
             uin: 用户 UIN.
             credential: 登录凭证.
         """
-        return self._build_request(
+        return self._build_cgi(
             module="music.musicasset.PlaylistBaseRead",
             method="GetPlaylistByUin",
             param={"uin": str(uin)},
@@ -230,7 +230,7 @@ class UserApi(ApiModule):
             num: 返回数量.
             credential: 登录凭证.
         """
-        return self._build_request(
+        return self._build_cgi(
             module="music.srfDissInfo.DissInfo",
             method="CgiGetDiss",
             param={
@@ -245,15 +245,14 @@ class UserApi(ApiModule):
             },
             credential=credential,
             response_model=GetSonglistDetailResponse,
-            pager_meta=PagerMeta(
-                strategy=OffsetStrategy(offset_key="song_begin", page_size_key="song_num"),
-                adapter=ResponseAdapter(
-                    has_more_flag="hasmore",
-                    total="total",
-                    count=lambda response: len(response.songs),
-                ),
+            pager_strategy=OffsetStrategy[GetSonglistDetailResponse](
+                offset_key="song_begin",
+                page_size_key="song_num",
+                has_more_extractor=lambda r: bool(r.hasmore),
+                total_extractor=lambda r: r.total,
+                count_extractor=lambda response: len(response.songs),
             ),
-        )
+        ).with_extractor(lambda r: r.songs)
 
     def get_fav_songlist(
         self,
@@ -271,21 +270,58 @@ class UserApi(ApiModule):
             num: 每页数量.
             credential: 登录凭证.
         """
-        return self._build_request(
+        return self._build_cgi(
             module="music.musicasset.PlaylistFavRead",
             method="CgiGetPlaylistFavInfo",
             param={"uin": euin, "offset": (page - 1) * num, "size": num},
             credential=credential,
             response_model=UserFavSonglistResponse,
-            pager_meta=PagerMeta(
-                strategy=OffsetStrategy(offset_key="offset", page_size_key="size"),
-                adapter=ResponseAdapter(
-                    has_more_flag="hasmore",
-                    total="total",
-                    count=lambda response: len(response.playlists),
-                ),
+            pager_strategy=OffsetStrategy[UserFavSonglistResponse](
+                offset_key="offset",
+                page_size_key="size",
+                has_more_extractor=lambda r: bool(r.hasmore),
+                total_extractor=lambda r: r.total,
+                count_extractor=lambda r: len(r.playlists),
             ),
+        ).with_extractor(lambda r: r.playlists)
+
+    async def fav_songlist(self, songlist_id: int, *, credential: Credential | None = None) -> bool:
+        """收藏歌单 (将他人的公开歌单加入当前账号的收藏).
+
+        Args:
+            songlist_id: 歌单 ID, 即歌单的 disstid/pid (不是自建歌单的 dirid).
+            credential: 登录凭证.
+
+        Returns:
+            是否收藏成功 (歌单已在收藏中也返回 True).
+        """
+        data = await self._build_cgi(
+            module="music.musicasset.PlaylistFavWrite",
+            method="FavPlaylist",
+            param={"uin": (credential or self._client.credential).encrypt_uin, "v_playlistId": [songlist_id]},
+            credential=credential,
+            require_login=True,
         )
+        return data.get("result") == 0 and songlist_id not in (data.get("v_failedPlaylistId") or [])
+
+    async def unfav_songlist(self, songlist_id: int, *, credential: Credential | None = None) -> bool:
+        """取消收藏歌单.
+
+        Args:
+            songlist_id: 歌单 ID, 即歌单的 disstid/pid (不是自建歌单的 dirid).
+            credential: 登录凭证.
+
+        Returns:
+            是否取消成功 (歌单本就不在收藏中也返回 True).
+        """
+        data = await self._build_cgi(
+            module="music.musicasset.PlaylistFavWrite",
+            method="CancelFavPlaylist",
+            param={"uin": (credential or self._client.credential).encrypt_uin, "v_playlistId": [songlist_id]},
+            credential=credential,
+            require_login=True,
+        )
+        return data.get("result") == 0 and songlist_id not in (data.get("v_failedPlaylistId") or [])
 
     def get_fav_album(
         self,
@@ -303,21 +339,20 @@ class UserApi(ApiModule):
             num: 每页数量.
             credential: 登录凭证.
         """
-        return self._build_request(
+        return self._build_cgi(
             module="music.musicasset.AlbumFavRead",
             method="CgiGetAlbumFavInfo",
             param={"euin": euin, "offset": (page - 1) * num, "size": num},
             credential=credential,
             response_model=UserFavAlbumResponse,
-            pager_meta=PagerMeta(
-                strategy=OffsetStrategy(offset_key="offset", page_size_key="size"),
-                adapter=ResponseAdapter(
-                    has_more_flag="hasmore",
-                    total="total",
-                    count=lambda response: len(response.albums),
-                ),
+            pager_strategy=OffsetStrategy[UserFavAlbumResponse](
+                offset_key="offset",
+                page_size_key="size",
+                has_more_extractor=lambda r: bool(r.hasmore),
+                total_extractor=lambda r: r.total,
+                count_extractor=lambda r: len(r.albums),
             ),
-        )
+        ).with_extractor(lambda r: r.albums)
 
     def get_fav_mv(
         self,
@@ -335,12 +370,12 @@ class UserApi(ApiModule):
             num: 每页数量.
             credential: 登录凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             module="music.musicasset.MVFavRead",
             method="getMyFavMV_v2",
             param={"encuin": euin, "pagesize": num, "num": page - 1},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             response_model=UserFavMvResponse,
         )
 
@@ -351,10 +386,132 @@ class UserApi(ApiModule):
             euin: 加密后的 UIN.
             credential: 登录凭证.
         """
-        return self._build_request(
+        return self._build_cgi(
             module="music.recommend.UserProfileSettingSvr",
             method="GetProfileReport",
             param={"VisitAccount": euin},
             credential=credential,
             response_model=UserMusicGeneResponse,
         )
+
+    def get_dislike_list(
+        self,
+        cmd: int = 3,
+        page: int = 1,
+        lastid: int = 0,
+        *,
+        credential: Credential | None = None,
+    ):
+        """获取用户不喜欢列表.
+
+        Args:
+            cmd:    类型, 2=歌手 / 3=歌曲 / 4=风格.
+            page:   页码.
+            lastid: 分页游标.
+            credential: 登录凭证.
+        """
+        lastid_fields = {2: "SingersLastid", 3: "SongLastid", 4: "StyleLastid"}
+        param: dict[str, Any] = {"Cmd": cmd, "Page": page}
+        if lastid:
+            param[lastid_fields[cmd]] = lastid
+
+        def _build_next_params(p: dict[str, Any], r: DislikeListData) -> dict[str, Any] | None:
+            if not (r.singers or r.songs or r.styles):
+                return None
+            next_p = p.copy()
+            next_p["Page"] = next_p["Page"] + 1
+            if r.songs:
+                next_p["SongLastid"] = r.songs[-1].id
+            if r.singers:
+                next_p["SingersLastid"] = r.singers[-1].id
+            if r.styles:
+                next_p["StyleLastid"] = r.styles[-1].id
+            return next_p
+
+        return self._build_cgi(
+            module="music.feedback.FeedbackBlack",
+            method="GetDislikeList",
+            param=param,
+            credential=credential,
+            require_login=True,
+            response_model=DislikeListData,
+            sign=True,
+            pager_strategy=MultiFieldContinuationStrategy[DislikeListData](
+                build_next_params=_build_next_params,
+            ),
+        )
+
+    async def add_dislike(self, id_type: int, values: list[int], *, credential: Credential | None = None) -> bool:
+        """添加不喜欢.
+
+        Args:
+            id_type: 类型, 1=歌曲 / 2=歌手 / 3=风格.
+            values:  对应的 ID 列表.
+            credential: 登录凭证.
+
+        Returns:
+            是否操作成功.
+        """
+        keys = {1: "Songs", 2: "Singers", 3: "Styles"}
+        result = await self._build_cgi(
+            module="music.feedback.FeedbackBlack",
+            method="AddDislike",
+            param={keys[id_type]: [{"ID": str(vid), "IdType": id_type} for vid in values]},
+            credential=credential,
+            require_login=True,
+        )
+        return result.get("Retcode") == 0
+
+    async def cancel_dislike(
+        self,
+        id_type: int,
+        values: list[int],
+        *,
+        credential: Credential | None = None,
+    ) -> bool:
+        """取消不喜欢.
+
+        Args:
+            id_type:   类型, 1=歌曲 / 2=歌手 / 3=风格.
+            values:    对应 ID 列表.
+            credential: 登录凭证.
+
+        Returns:
+            是否操作成功.
+        """
+        keys = {1: "Songs", 2: "Singers", 3: "Styles"}
+        result = await self._build_cgi(
+            module="music.feedback.FeedbackBlack",
+            method="CancelDislike",
+            param={keys[id_type]: [{"ID": str(vid), "IdType": id_type} for vid in (values or [])]},
+            credential=credential,
+            require_login=True,
+        )
+        return result.get("Retcode") == 0
+
+    async def cancel_all_dislike_song(self, *, credential: Credential | None = None) -> bool:
+        """清空所有不喜欢歌曲.
+
+        Args:
+            credential: 登录凭证.
+
+        Returns:
+            是否操作成功.
+        """
+        result = await self._build_cgi(
+            module="music.feedback.FeedbackBlack",
+            method="CancelAllDislike",
+            param={"ISOnlyGetToken": True},
+            preserve_bool=True,
+            credential=credential,
+            require_login=True,
+        )
+        token = result.get("Token", "")
+        result = await self._build_cgi(
+            module="music.feedback.FeedbackBlack",
+            method="CancelAllDislike",
+            param={"DelType": 3, "Token": token},
+            credential=credential,
+            require_login=True,
+        )
+        return result.get("Retcode") == 0

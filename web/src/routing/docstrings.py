@@ -109,7 +109,13 @@ def enum_member_description(enum_type: type[Enum]) -> str | None:
         for line in str(section.value).splitlines():
             match = _ENUM_LIST_RE.match(line)
             if match:
-                items.append(f"- **{match.group(1)}**: {match.group(2)}")
+                member_name = match.group(1)
+                desc = match.group(2).strip()
+                member = getattr(enum_type, member_name, None)
+                if member is not None and isinstance(member.value, (int, str)):
+                    items.append(f"- `{member.value}` : {desc}" if desc else f"- `{member.value}`")
+                else:
+                    items.append(f"- **{member_name}**: {desc}" if desc else f"- **{member_name}**")
     return "\n".join(items) if items else None
 
 
@@ -159,6 +165,4 @@ def _split_text_sections(text_sections: list[str]) -> tuple[str, str]:
     if not text:
         return "", ""
     lines = text.splitlines()
-    summary = lines[0].strip().rstrip(".")
-    description = "\n".join(lines[1:]).strip()
-    return summary, description
+    return lines[0].strip().rstrip("."), "\n".join(lines[1:]).strip()

@@ -2,7 +2,6 @@
 
 from typing import Generic, TypeVar
 
-from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -36,5 +35,4 @@ def error_response(
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     """构造标准错误响应."""
-    response = ErrorResponse(msg=msg)
-    return JSONResponse(status_code=status_code, content=jsonable_encoder(response), headers=headers)
+    return JSONResponse(status_code=status_code, content=ErrorResponse(msg=msg).model_dump(), headers=headers)

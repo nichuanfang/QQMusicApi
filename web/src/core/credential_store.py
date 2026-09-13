@@ -5,6 +5,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import suppress
 from pathlib import Path
 
@@ -39,6 +40,7 @@ class CredentialStore:
             logger.info("初始化凭证存储: %s", self.path)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             connection = self._connect()
+            connection.execute("PRAGMA journal_mode=WAL;")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS credentials (
@@ -64,15 +66,8 @@ class CredentialStore:
 
             with connection:
                 for account in valid_accounts:
-                    exists = connection.execute(
-                        "SELECT 1 FROM credentials WHERE musicid = ?",
-                        (account.musicid,),
-                    ).fetchone()
-                    if exists is None:
-                        logger.debug("新增账号种子: musicid %s", account.musicid)
-                        self._upsert(account.to_credential())
-                    else:
-                        logger.debug("账号种子已存在, 跳过: musicid %s", account.musicid)
+                    logger.debug("同步账号种子: musicid %s", account.musicid)
+                    self._upsert(account.to_credential())
 
                 if toml_ids:
                     placeholders = ", ".join("?" for _ in toml_ids)
@@ -87,19 +82,19 @@ class CredentialStore:
 
             logger.info("账号种子同步完成")
 
-    def random_credentials(self) -> list[Credential]:
+    def random_credentials(self) -> Iterator[Credential]:
         """随机顺序返回全部有效 Credential."""
         with self._lock:
             rows = self._connect().execute("SELECT credential_json FROM credentials WHERE valid = 1").fetchall()
-        credentials: list[Credential] = []
-        for row in rows:
-            credential = _load_credential(row[0])
-            if credential is not None and credential_has_login(credential):
-                credentials.append(credential)
-        logger.debug("获取有效凭证: %d 个", len(credentials))
+
+        json_strings = [row[0] for row in rows]
         rng = secrets.SystemRandom()
-        rng.shuffle(credentials)
-        return credentials
+        rng.shuffle(json_strings)
+
+        for json_str in json_strings:
+            credential = _load_credential(json_str)
+            if credential is not None and credential_has_login(credential):
+                yield credential
 
     def get(self, musicid: int) -> Credential | None:
         """按 musicid 获取凭证."""
@@ -152,9 +147,8 @@ class CredentialStore:
         """返回全部已知 musicid."""
         with self._lock:
             rows = self._connect().execute("SELECT musicid FROM credentials").fetchall()
-        musicids = [row[0] for row in rows]
-        logger.debug("获取所有 musicid: %d 个", len(musicids))
-        return musicids
+        logger.debug("获取所有 musicid: %d 个", len(rows))
+        return [row[0] for row in rows]
 
     def close(self) -> None:
         """关闭 SQLite 连接."""
@@ -178,7 +172,8 @@ class CredentialStore:
             VALUES (?, ?, ?)
             ON CONFLICT(musicid) DO UPDATE SET
               credential_json = excluded.credential_json,
-              updated_at = excluded.updated_at
+              updated_at = excluded.updated_at,
+              valid = 1
             """,
             (
                 credential.musicid,
@@ -214,15 +209,15 @@ def credential_needs_refresh(credential: Credential) -> bool:
     """判断凭证是否需要刷新."""
     if credential.musickey_create_time <= 0 or credential.key_expires_in <= 0:
         return False
-    needs_refresh = credential.is_expired()
-    if needs_refresh:
+    if credential.is_expired():
         logger.debug(
             "凭证需要刷新 (检查 musicid %s): 创建于 %s, 有效期 %ss",
             credential.musicid,
             credential.musickey_create_time,
             credential.key_expires_in,
         )
-    return needs_refresh
+        return True
+    return False
 
 
 def credential_has_login(credential: Credential) -> bool:

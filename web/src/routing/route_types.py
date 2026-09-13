@@ -40,6 +40,7 @@ class AuthPolicy(str, Enum):
 
     NONE = "none"
     COOKIE_OR_DEFAULT = "cookie_or_default"
+    OPTIONAL = "optional"
 
 
 @dataclass(frozen=True)
@@ -99,10 +100,10 @@ class EnumIntMapping(Generic[EnumT]):
         names = self.labels or tuple(member.name.casefold() for member in self.members)
         if self.descriptions is not None:
             return "\n".join(
-                f"- `{value}`: {name}, {desc}" if desc else f"- `{value}`: {name}"
+                f"- `{value}` : {desc}" if desc else f"- `{value}` : {name}"
                 for value, name, desc in zip(self.values, names, self.descriptions, strict=True)
             )
-        return "\n".join(f"- `{value}`: {name}" for value, name in zip(self.values, names, strict=True))
+        return "\n".join(f"- `{value}` : {name}" for value, name in zip(self.values, names, strict=True))
 
 
 def _parse_public_int(value: Any) -> int:

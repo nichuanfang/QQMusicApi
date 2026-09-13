@@ -2,18 +2,20 @@
 
 from typing import Annotated, Any, TypeAlias
 
-from fastapi import HTTPException
 from pydantic import BaseModel, BeforeValidator, Field, WithJsonSchema
 from pydantic.json_schema import SkipJsonSchema
 
 from qqmusic_api.modules.song import (
     BaseSongFileType,
     EncryptedSongFileType,
+    RingSongFileType,
     SongFileInfo,
     SongFileType,
+    SongQueryInfo,
     SpecialSongFileType,
 )
 
+from ..routing.adapter_registry import adapter
 from ..routing.docstrings import get_enum_member_descriptions
 from ..routing.params import enum_mapping_schema, enum_mapping_validator
 from ..routing.route_types import EnumIntMapping, RouteContext
@@ -63,6 +65,9 @@ SONG_FILE_TYPES: tuple[BaseSongFileType, ...] = (
     SpecialSongFileType.DRUMS,
     SpecialSongFileType.KAZOO,
     SpecialSongFileType.THERAPY,
+    RingSongFileType.RING_128,
+    RingSongFileType.RING_96,
+    RingSongFileType.RING_48,
 )
 SONG_FILE_TYPE_LABELS = tuple(
     member.name
@@ -113,26 +118,21 @@ class SongUrlsRequest(BaseModel):
     )
 
 
-def _parse_query_song_values(values: list[str]) -> list[int] | list[str]:
-    """解析批量查询歌曲 ID 或 MID 列表.
+class SongQueryItem(BaseModel):
+    """单个歌曲查询项."""
 
-    Args:
-        values: 歌曲 ID 字符串列表或 MID 字符串列表.
-
-    Returns:
-        list[int] | list[str]: 全部为数字时返回 int 列表, 否则返回原始字符串列表.
-
-    Raises:
-        HTTPException: ID 与 MID 不能混合.
-    """
-    numeric_values = [value.isdecimal() for value in values]
-    if all(numeric_values):
-        return [int(value) for value in values]
-    if any(numeric_values):
-        raise HTTPException(status_code=422, detail="value 不能混合歌曲 ID 与 MID")
-    return values
+    id: int | SkipJsonSchema[None] = Field(default=None, description="歌曲 ID.")
+    mid: str | SkipJsonSchema[None] = Field(default=None, description="歌曲 MID.")
+    song_type: int | SkipJsonSchema[None] = Field(default=None, description="歌曲类型.")
 
 
+class QuerySongRequest(BaseModel):
+    """批量歌曲查询请求体."""
+
+    query_info: list[SongQueryItem] = Field(description="歌曲查询信息列表.")
+
+
+@adapter("song", "get_song_urls")
 async def get_song_urls_adapter(context: RouteContext):
     """批量获取歌曲文件链接."""
     body = context.params["body"]
@@ -147,15 +147,17 @@ async def get_song_urls_adapter(context: RouteContext):
             for item in body.file_info
         ],
         file_type=body.file_type,
-        credential=context.params["credential"],
+        credential=context.credential,
     )
 
 
+@adapter("song", "get_fav_num_by_id")
 async def get_fav_num_by_id_adapter(context: RouteContext):
     """根据单个歌曲 ID 获取收藏数量."""
     return await context.client.song.get_fav_num([context.params["id"]])
 
 
+@adapter("song", "get_song_url")
 async def get_song_url_adapter(context: RouteContext):
     """根据单个歌曲 MID 获取文件链接."""
     return await context.client.song.get_song_urls(
@@ -167,10 +169,27 @@ async def get_song_url_adapter(context: RouteContext):
             )
         ],
         file_type=context.params["file_type"],
-        credential=context.params["credential"],
+        credential=context.credential,
     )
 
 
-async def query_song_adapter(context: RouteContext):
+@adapter("song", "query_song_get")
+async def query_song_get_adapter(context: RouteContext):
+    """获取单首歌曲信息."""
+    value = context.params["value"]
+    song_type = context.params.get("song_type")
+    is_id = value.isdecimal()
+    query_info = SongQueryInfo(
+        id=int(value) if is_id else None,
+        mid=None if is_id else value,
+        song_type=song_type,
+    )
+    return await context.client.song.query_song([query_info])
+
+
+@adapter("song", "query_song_post")
+async def query_song_post_adapter(context: RouteContext):
     """批量查询歌曲."""
-    return await context.client.song.query_song(_parse_query_song_values(context.params["value"]))
+    body = context.params["body"]
+    query_info = [SongQueryInfo(id=item.id, mid=item.mid, song_type=item.song_type) for item in body.query_info]
+    return await context.client.song.query_song(query_info)

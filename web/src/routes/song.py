@@ -21,14 +21,11 @@ from qqmusic_api.models.song import (
 from ..modules.song import (
     DEFAULT_SONG_FILE_TYPE,
     SONG_FILE_TYPE_MAPPING,
+    QuerySongRequest,
     SongUrlsRequest,
-    get_fav_num_by_id_adapter,
-    get_song_url_adapter,
-    get_song_urls_adapter,
-    query_song_adapter,
 )
 from ..routing.route_types import PUBLIC_60, PUBLIC_300, PUBLIC_600, AuthPolicy, HttpMethod, WebRoute
-from ._helpers import MID, SONG_ID, SONG_RELATED_MV_PAGE, SONG_RELATED_SONGLIST_PAGE, VALUE, P, Q, R
+from ._helpers import MID, SONG_RELATED_MV_PAGE, SONG_RELATED_SONGLIST_PAGE, SONGID, VALUE, P, Q, R
 
 ROUTES: tuple[WebRoute, ...] = (
     R("song", "get_cdn_dispatch", "/song/get_cdn_dispatch", GetCdnDispatchResponse),
@@ -48,11 +45,10 @@ ROUTES: tuple[WebRoute, ...] = (
         GetFavNumResponse,
         params=(P("id", int, "歌曲 ID."),),
         cache=PUBLIC_60,
-        adapter=get_fav_num_by_id_adapter,
         summary="获取歌曲收藏数量",
         description="根据单个歌曲 ID 获取收藏数量.",
     ),
-    R("song", "get_labels", "/song/{songid}/labels", GetSongLabelsResponse, params=SONG_ID, cache=PUBLIC_300),
+    R("song", "get_labels", "/song/{songid}/labels", GetSongLabelsResponse, params=SONGID, cache=PUBLIC_300),
     R(
         "song",
         "get_other_version",
@@ -67,7 +63,7 @@ ROUTES: tuple[WebRoute, ...] = (
         "get_related_mv",
         "/song/{songid}/related_mv",
         GetRelatedMvResponse,
-        params=(*SONG_ID, *SONG_RELATED_MV_PAGE),
+        params=(*SONGID, *SONG_RELATED_MV_PAGE),
         cache=PUBLIC_600,
     ),
     R(
@@ -75,21 +71,20 @@ ROUTES: tuple[WebRoute, ...] = (
         "get_related_songlist",
         "/song/{songid}/related_songlists",
         GetRelatedSonglistResponse,
-        params=(*SONG_ID, *SONG_RELATED_SONGLIST_PAGE),
+        params=(*SONGID, *SONG_RELATED_SONGLIST_PAGE),
         cache=PUBLIC_600,
     ),
     R("song", "has_sheet", "/song/{mid}/has_sheet", HasSheetMusicResponse, params=MID, cache=PUBLIC_300),
     R("song", "get_sheet", "/song/{mid}/sheet", GetSheetResponse, params=MID, cache=PUBLIC_300),
-    R("song", "get_similar_song", "/song/{songid}/similar", GetSimilarSongResponse, params=SONG_ID, cache=PUBLIC_600),
+    R("song", "get_similar_song", "/song/{songid}/similar", GetSimilarSongResponse, params=SONGID, cache=PUBLIC_600),
     R(
         "song",
         "get_song_urls",
         "/song/get_song_urls",
         GetSongUrlsResponse,
         methods=(HttpMethod.POST,),
-        auth=AuthPolicy.COOKIE_OR_DEFAULT,
+        auth=AuthPolicy.OPTIONAL,
         body_model=SongUrlsRequest,
-        adapter=get_song_urls_adapter,
     ),
     R(
         "song",
@@ -108,17 +103,31 @@ ROUTES: tuple[WebRoute, ...] = (
             Q("song_type", int | None, None, "歌曲类型."),
             Q("media_mid", str | None, None, "媒体文件 MID."),
         ),
-        auth=AuthPolicy.COOKIE_OR_DEFAULT,
-        adapter=get_song_url_adapter,
+        auth=AuthPolicy.OPTIONAL,
         summary="获取单首歌曲文件链接",
         description="根据单个歌曲 MID 获取文件链接.",
     ),
     R(
         "song",
-        "query_song",
+        "query_song_get",
         "/song/query_song",
         QuerySongResponse,
-        params=(Q("value", list[str], description="歌曲 ID 列表或 MID 列表."),),
-        adapter=query_song_adapter,
+        methods=(HttpMethod.GET,),
+        params=(
+            Q("value", str, description="歌曲 ID 或 MID."),
+            Q("song_type", int | None, None, description="歌曲类型."),
+        ),
+        summary="获取单首歌曲信息",
+        description="根据单个歌曲 ID 或 MID 查询歌曲信息.",
+    ),
+    R(
+        "song",
+        "query_song_post",
+        "/song/query_song",
+        QuerySongResponse,
+        methods=(HttpMethod.POST,),
+        body_model=QuerySongRequest,
+        summary="批量查询歌曲",
+        description="通过传递 `query_info` 结构列表进行批量查询.",
     ),
 )

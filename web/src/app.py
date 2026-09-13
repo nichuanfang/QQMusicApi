@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
@@ -25,9 +26,10 @@ from qqmusic_api.core.exceptions import (
     RatelimitedError,
 )
 
+from . import modules  # noqa: F401
 from .core.auth import startup_credential_health_check
 from .core.cache import MemoryBackend, RedisBackend
-from .core.config import PROJECT_ROOT, SecurityConfig, settings
+from .core.config import SecurityConfig, settings
 from .core.credential_store import ACCOUNT_CONFIG_FILE, CredentialStore, load_account_configs
 from .core.deps import WebServices
 from .core.response import ErrorResponse, error_response
@@ -45,7 +47,7 @@ _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     422: {"model": ErrorResponse},
 }
 
-_DEVICE_PATH = str(PROJECT_ROOT / "web" / "data" / "device.json")
+
 _HTTP_ERROR_MESSAGES = {
     400: "请求错误",
     401: "未授权",
@@ -56,8 +58,10 @@ _HTTP_ERROR_MESSAGES = {
 }
 
 
-def _http_exception_message(exc: HTTPException) -> str:
+def _http_exception_message(exc: StarletteHTTPException) -> str:
     """返回稳定且面向调用方的 HTTP 错误说明."""
+    if exc.status_code in _HTTP_ERROR_MESSAGES:
+        return _HTTP_ERROR_MESSAGES[exc.status_code]
     if isinstance(exc.detail, str) and exc.detail:
         return exc.detail
     return _HTTP_ERROR_MESSAGES.get(exc.status_code, "HTTP 请求错误")
@@ -80,7 +84,7 @@ async def _lifespan(app: FastAPI):
     services: WebServices = app.state.services
     try:
         logger.info("初始化 SDK Client...")
-        services.client = Client(device_path=_DEVICE_PATH)
+        services.client = Client(device_path=settings.client.device_path)
         logger.debug("SDK Client 初始化完成")
 
         logger.debug("配置全局凭证设置...")
@@ -107,17 +111,17 @@ async def _lifespan(app: FastAPI):
     try:
         await services.cache.close()
     except Exception:
-        logger.error("关闭缓存异常", exc_info=True)
+        logger.exception("关闭缓存异常")
     try:
         if services.credential_store is not None:
             services.credential_store.close()
     except Exception:
-        logger.error("关闭凭证存储异常", exc_info=True)
+        logger.exception("关闭凭证存储异常")
     try:
         if services.client is not None:
             await services.client.close()
     except Exception:
-        logger.error("关闭 SDK Client 异常", exc_info=True)
+        logger.exception("关闭 SDK Client 异常")
     logger.info("Web 应用关闭完成")
 
 
@@ -176,8 +180,8 @@ def create_app() -> FastAPI:
 根据不同登录方式, 您还可以按需提供补充字段: `openid`, `refresh_token`, `access_token`, `expired_at`, `unionid`, `str_musicid`, `refresh_key`。
 """.strip(),
         lifespan=_lifespan,
-        docs_url=None,
-        redoc_url=None,
+        docs_url="/swagger",
+        redoc_url="/redoc",
         responses=_ERROR_RESPONSES,
     )
     if settings.cache.backend == "redis":
@@ -191,8 +195,12 @@ def create_app() -> FastAPI:
     configure_security(app, settings.security)
     app.middleware("http")(apply_security_middleware)
 
+    _SKIP_ACCESS_LOG_PATHS = frozenset({"/", "/health"})
+
     @app.middleware("http")
     async def _log_access(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        if request.url.path in _SKIP_ACCESS_LOG_PATHS:
+            return await call_next(request)
         start = perf_counter()
         response = await call_next(request)
         elapsed_ms = (perf_counter() - start) * 1000
@@ -223,7 +231,8 @@ def create_app() -> FastAPI:
         )
 
     @app.exception_handler(HTTPException)
-    async def _handle_http_exception(_request: Request, exc: HTTPException) -> JSONResponse:
+    @app.exception_handler(StarletteHTTPException)
+    async def _handle_http_exception(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
         return error_response(
             status_code=exc.status_code,
             msg=_http_exception_message(exc),

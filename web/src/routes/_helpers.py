@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from qqmusic_api.models.comment import CommentBizType
+from qqmusic_api.models.search import SearchSelector
 from qqmusic_api.modules.search import SearchType
 from qqmusic_api.modules.singer import AreaType, GenreType, IndexType, SexType
 
@@ -78,8 +80,12 @@ def R(
 
 VALUE = (P("value", int | str, "资源 ID 或 MID."),)
 MID = (P("mid", str, "资源 MID."),)
-SONG_ID = (P("songid", int, "歌曲 ID."),)
+SONGID = (P("songid", int, "歌曲 ID."),)
 BIZ_ID = (P("biz_id", int, "业务歌曲 ID."),)
+COMMENT_BIZ_PARAMS = (
+    Q("biz_type", int | CommentBizType, CommentBizType.SONG, "业务类型."),
+    Q("biz_sub_type", int | None, None, "业务子类型 (可选)."),
+)
 SONGLIST_ID = (P("songlist_id", int, "歌单 ID."),)
 TOP_ID = (P("top_id", int, "排行榜 ID."),)
 UIN = (P("uin", int, "用户 UIN."),)
@@ -98,6 +104,8 @@ LYRIC_OPTIONS = (
     Q("qrc", bool, default=False, description="是否返回逐字歌词."),
     Q("trans", bool, default=False, description="是否返回翻译歌词."),
     Q("roma", bool, default=False, description="是否返回罗马音歌词."),
+    Q("singing_annotations", bool, default=False, description="是否返回助唱标注歌词."),
+    Q("song_type", int, default=1, description="歌曲类型."),
 )
 SINGER_PAGE = (Q("num", int, 10, "返回数量."), Q("page", int, 1, "页码."))
 SINGER_SIMILAR_PAGE = (Q("number", int, 10, "返回数量."),)
@@ -112,6 +120,13 @@ SINGER_INDEX = (
     Q("index", IndexType, IndexType.ALL, "首字母索引."),
     Q("num", int, 80, "每页返回数量."),
     Q("page", int, 1, "页码."),
+)
+SINGER_DESC_OPTIONS = (
+    Q("ex_singer", bool, default=True, description="是否返回扩展描述信息."),
+    Q("wiki_singer", bool, default=True, description="是否返回百科 XML 数据."),
+    Q("group_singer", bool, default=True, description="是否返回组合成员信息."),
+    Q("pic", bool, default=True, description="是否返回头像/立绘图片 URL."),
+    Q("photos", bool, default=True, description="是否返回相册大图列表."),
 )
 SONG_RELATED_MV_PAGE = (Q("last_mvid", str | None, None, "上一页最后一个 MV ID."),)
 SONG_RELATED_SONGLIST_PAGE = (Q("last", list[int] | None, None, "上一页游标."),)
@@ -139,4 +154,6 @@ SEARCH_BY_TYPE = (
     *SEARCH_GENERAL,
     Q("search_type", SearchType, SearchType.SONG, "搜索类型."),
     Q("num", int, 10, "返回数量."),
+    Q("selectors", list[SearchSelector] | None, None, "搜索筛选器, 以 JSON 数组字符串传入."),
+    Q("searchid", str | None, None, "搜索 ID."),
 )

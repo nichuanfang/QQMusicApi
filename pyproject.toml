@@ -39,7 +39,6 @@ dependencies = [
   "orjson>=3.10.15",
   "paho-mqtt>=2.1.0",
   "pydantic>=2.13.3",
-  "tarsio>=0.5.1",
   "typing-extensions>=4.12.2",
 ]
 dynamic = ["version"]
@@ -49,13 +48,18 @@ documentation = "https://l-1124.github.io/QQMusicApi/"
 homepage = "https://l-1124.github.io/QQMusicApi/"
 repository = "https://github.com/l-1124/QQMusicApi"
 
+[project.optional-dependencies]
+upload = [
+    "cos-python-sdk-v5>=1.9.44",
+]
+
 [dependency-groups]
 dev = [
-  "tarsio[cli]>=0.5.1",
   "terminal-qrcode>=1.1.0",
   { include-group = "docs" },
   { include-group = "linting" },
   { include-group = "testing" },
+  { include-group = "helper" },
 ]
 docs = [
   "docstring-inheritance>=3.0.0",
@@ -64,6 +68,9 @@ docs = [
   "mkdocstrings>=1.0.3",
   "mkdocstrings-python>=2.0.3",
   "zensical>=0.0.30",
+]
+helper = [
+    "cos-python-sdk-v5>=1.9.44",
 ]
 linting = [
   "prek>=0.3.5",
@@ -108,6 +115,9 @@ addopts = ["-rxXs"]
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+  "core: Core 层单元测试, 使用桩数据驱动, 不发起真实网络请求",
+]
 
 [tool.ruff]
 line-length = 120

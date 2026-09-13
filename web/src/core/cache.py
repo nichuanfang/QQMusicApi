@@ -9,7 +9,8 @@ from typing import Any, Protocol
 
 import orjson
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.requests import Request
+from fastapi.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +60,17 @@ class MemoryBackend:
 
     async def set(self, key: str, data: Any, ttl: int) -> None:
         """写入缓存条目."""
+        content = data.model_dump(mode="json") if hasattr(data, "model_dump") else data
+        raw = orjson.dumps(content, default=str)
         if key in self._store:
             self._store.move_to_end(key)
             logger.debug("更新内存缓存: %s, TTL: %ds", key, ttl)
         elif len(self._store) >= self._max_size:
             logger.debug("内存缓存满, 执行驱逐")
             self._evict()
-            logger.debug("写入内存缓存: %s, TTL: %ds", key, ttl)
         else:
             logger.debug("写入内存缓存: %s, TTL: %ds", key, ttl)
-        self._store[key] = _CacheEntry(data=jsonable_encoder(data), expires_at=time.monotonic() + ttl)
+        self._store[key] = _CacheEntry(data=raw, expires_at=time.monotonic() + ttl)
 
     async def close(self) -> None:
         """清空内存缓存."""
@@ -103,7 +105,7 @@ class RedisBackend:
             ) from exc
 
         logger.info("初始化 Redis 缓存后端: %s", url)
-        self._client: Redis = Redis.from_url(url, decode_responses=True)
+        self._client: Redis = Redis.from_url(url, decode_responses=False)
         self._prefix = prefix
 
     async def get(self, key: str) -> Any | None:
@@ -123,7 +125,11 @@ class RedisBackend:
     async def set(self, key: str, data: Any, ttl: int) -> None:
         """写入 Redis 缓存条目."""
         full_key = self._prefix + key
-        value = orjson.dumps(jsonable_encoder(data)).decode("utf-8")
+        """写入缓存条目."""
+        """写入缓存条目."""
+        """写入缓存条目."""
+        content = data.model_dump(mode="json") if hasattr(data, "model_dump") else data
+        value = orjson.dumps(content, default=str)
         await self._client.setex(full_key, ttl, value)
         logger.debug("写入 Redis 缓存: %s, TTL: %ds", full_key, ttl)
 
@@ -135,19 +141,37 @@ class RedisBackend:
 
 def make_cache_key(path: str, kwargs: dict[str, Any]) -> str:
     """基于路径与请求参数生成缓存键."""
-    serialized = orjson.dumps(jsonable_encoder(kwargs), option=orjson.OPT_SORT_KEYS)
+    serialized = orjson.dumps(kwargs, option=orjson.OPT_SORT_KEYS, default=str)
     param_hash = hashlib.sha256(serialized).hexdigest()[:16]
     return f"{path}:{param_hash}"
 
 
-def cached_response(data: Any, ttl: int) -> JSONResponse:
+def cached_response(data: Any, ttl: int, request: Request | None = None) -> Response:
     """构造带 Cache-Control 头的缓存响应."""
-    content = data if isinstance(data, dict) else jsonable_encoder(data)
-    etag = hashlib.sha256(orjson.dumps(content, option=orjson.OPT_SORT_KEYS)).hexdigest()[:16]
+    if isinstance(data, bytes):
+        etag = f'W/"{hashlib.sha256(data).hexdigest()[:16]}"'
+        headers = {"Cache-Control": f"public, max-age={ttl}", "ETag": etag}
+        if request is not None and request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        return Response(content=data, media_type="application/json", headers=headers)
+
+    if hasattr(data, "model_dump"):
+        content = data.model_dump(mode="json")
+    else:
+        content = data if isinstance(data, dict) else jsonable_encoder(data)
+
+    etag = f'W/"{hashlib.sha256(orjson.dumps(content, option=orjson.OPT_SORT_KEYS)).hexdigest()[:16]}"'
+    headers = {
+        "Cache-Control": f"public, max-age={ttl}",
+        "ETag": etag,
+    }
+
+    if request is not None:
+        if_none_match = request.headers.get("if-none-match")
+        if if_none_match == etag:
+            return Response(status_code=304, headers=headers)
+
     return JSONResponse(
         content=content,
-        headers={
-            "Cache-Control": f"public, max-age={ttl}",
-            "ETag": f'W/"{etag}"',
-        },
+        headers=headers,
     )

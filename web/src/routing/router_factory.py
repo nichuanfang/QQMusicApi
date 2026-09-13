@@ -1,10 +1,11 @@
 """类型化 Web 路由注册工厂."""
 
+import dataclasses
 import inspect
 import re
 from collections.abc import Callable
-from enum import IntEnum
-from typing import Annotated, Any, get_args, get_origin
+from enum import Enum, IntEnum
+from typing import Annotated, Any, cast, get_args, get_origin
 
 from fastapi import Depends, FastAPI, Path, Query, Request
 from pydantic import BaseModel
@@ -27,9 +28,17 @@ from ..core.auth import credential_from_cookies
 from ..core.cache import CacheBackend
 from ..core.deps import cache_dependency, client_dependency
 from ..core.response import ApiResponse
+from .adapter_registry import get_adapter
 from .docstrings import MethodDocs, load_method_docs
 from .executor import collect_param_values, execute_route
-from .params import build_param_model, enum_type, external_param_annotation, is_empty_model, split_params
+from .params import (
+    _is_json_query_annotation,
+    build_param_model,
+    enum_type,
+    external_param_annotation,
+    is_empty_model,
+    split_params,
+)
 from .route_types import COOKIE_SECURITY_REQUIREMENT, AuthPolicy, ParamOverride, ParamSource, RouteContext, WebRoute
 
 _MODULE_CLASSES: dict[str, type[Any]] = {
@@ -60,24 +69,29 @@ def validate_routes(routes: tuple[WebRoute, ...]) -> tuple[str, ...]:
 
 def include_routes(app: FastAPI, routes: tuple[WebRoute, ...]) -> None:
     """将类型化 Web 路由注册到 FastAPI 应用."""
-    errors = validate_routes(routes)
+    resolved = tuple(_resolve_route(r) for r in routes)
+    errors = validate_routes(resolved)
     if errors:
         raise RuntimeError("Web 路由契约校验失败:\n" + "\n".join(f"- {error}" for error in errors))
-    for route in routes:
+    for route in resolved:
         endpoint, docs = make_endpoint(route)
         summary = route.summary or docs.summary or f"{route.module}.{route.method}"
         description = route.description or docs.description or summary
         openapi_extra = (
-            {"security": [COOKIE_SECURITY_REQUIREMENT]} if route.auth is AuthPolicy.COOKIE_OR_DEFAULT else None
+            {"security": [COOKIE_SECURITY_REQUIREMENT]}
+            if route.auth in (AuthPolicy.COOKIE_OR_DEFAULT, AuthPolicy.OPTIONAL)
+            else None
         )
+        actual_response_model = type(None) if route.response_model is bool else route.response_model
         app.add_api_route(
             route.path,
             endpoint,
             methods=[method.value for method in route.methods],
-            tags=list(route.tags or (route.module,)),
+            tags=cast("list[Enum | str]", list(route.tags or (route.module,))),
             summary=summary,
             description=description,
-            response_model=ApiResponse[route.response_model],
+            response_model=ApiResponse[actual_response_model],
+            response_model_by_alias=False,
             openapi_extra=openapi_extra,
         )
 
@@ -96,7 +110,7 @@ def make_endpoint(route: WebRoute) -> tuple[Callable[..., Any], MethodDocs]:
         _model_name(route, "Body"), split[ParamSource.BODY], source=ParamSource.BODY, docs=param_docs
     )
     body_model = route.body_model or generated_body_model
-    expose_credential = route.auth is AuthPolicy.COOKIE_OR_DEFAULT
+    expose_credential = route.auth in (AuthPolicy.COOKIE_OR_DEFAULT, AuthPolicy.OPTIONAL)
     endpoint_signature = _build_endpoint_signature(
         split[ParamSource.PATH],
         query_model,
@@ -127,6 +141,9 @@ def make_endpoint(route: WebRoute) -> tuple[Callable[..., Any], MethodDocs]:
     return endpoint, docs
 
 
+_SDK_SIGNATURE_CACHE: dict[Any, inspect.Signature] = {}
+
+
 def _resolve_route_params(route: WebRoute) -> tuple[ParamOverride, ...]:
     """按 SDK 签名解析路由参数并应用覆盖声明."""
     if route.adapter is not None:
@@ -134,7 +151,10 @@ def _resolve_route_params(route: WebRoute) -> tuple[ParamOverride, ...]:
     method = _resolve_method(route)
     if method is None:
         return route.param_overrides
-    signature = inspect.signature(method)
+
+    if method not in _SDK_SIGNATURE_CACHE:
+        _SDK_SIGNATURE_CACHE[method] = inspect.signature(method)
+    signature = _SDK_SIGNATURE_CACHE[method]
     template_names = set(re.findall(r"{([^{}]+)}", route.path))
     overrides = {param.name: param for param in route.param_overrides}
     resolved: list[ParamOverride] = []
@@ -335,8 +355,6 @@ def _validate_sdk_contract(route: WebRoute, route_params: tuple[ParamOverride, .
     missing = sdk_params - declared
     if missing:
         errors.append(f"SDK 参数未由 Web 路由绑定: {key} {sorted(missing)!r}")
-    if "credential" in signature.parameters and route.auth is not AuthPolicy.COOKIE_OR_DEFAULT:
-        errors.append(f"认证方法缺少认证策略: {key}")
     return errors
 
 
@@ -364,7 +382,7 @@ def _is_supported_query_annotation(annotation: Any, *, explicit: bool = False) -
     origin = get_origin(annotation)
     if origin is None:
         return annotation in {str, int, float, bool}
-    if origin is dict:
+    if _is_json_query_annotation(annotation):
         return explicit
     if origin in {list, tuple}:
         args = get_args(annotation)
@@ -382,6 +400,30 @@ def _resolve_method(route: WebRoute) -> Any | None:
     if module_cls is None:
         return None
     return getattr(module_cls, route.method, None)
+
+
+def _resolve_route(route: WebRoute) -> WebRoute:
+    """从 Adapter Registry 补全 adapter.
+
+    处理顺序:
+    1. 若 route.adapter 为 None, 从全局 Adapter Registry 查找已注册的 adapter.
+       inline adapter= 声明的优先级高于注册表.
+
+    Args:
+        route: 原始路由声明.
+
+    Returns:
+        补全后的路由声明; 无变化时返回原对象.
+    """
+    changes: dict[str, Any] = {}
+
+    # 1. 从注册表补全 adapter (inline 声明优先)
+    if route.adapter is None:
+        registered = get_adapter(route.module, route.method)
+        if registered is not None:
+            changes["adapter"] = registered
+
+    return dataclasses.replace(route, **changes) if changes else route
 
 
 def _merged_param_docs(route: WebRoute, docs: MethodDocs) -> dict[str, str]:

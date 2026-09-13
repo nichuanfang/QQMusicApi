@@ -1,7 +1,7 @@
 """歌单相关 API."""
 
 from ..core import CgiApiException
-from ..core.pagination import OffsetStrategy, PagerMeta, ResponseAdapter
+from ..core.pagination import OffsetStrategy
 from ..models.request import Credential
 from ..models.songlist import CreateDeleteSonglistResp, GetSonglistDetailResponse
 from ._base import ApiModule
@@ -46,7 +46,7 @@ class SonglistApi(ApiModule):
             tag: 是否返回标签信息.
             userinfo: 是否返回用户信息.
         """
-        return self._build_request(
+        return self._build_cgi(
             module="music.srfDissInfo.DissInfo",
             method="CgiGetDiss",
             param={
@@ -60,15 +60,14 @@ class SonglistApi(ApiModule):
                 "onlysonglist": onlysong,
             },
             response_model=GetSonglistDetailResponse,
-            pager_meta=PagerMeta(
-                strategy=OffsetStrategy(offset_key="song_begin", page_size_key="song_num"),
-                adapter=ResponseAdapter(
-                    has_more_flag="hasmore",
-                    total="total",
-                    count=lambda response: len(response.songs),
-                ),
+            pager_strategy=OffsetStrategy[GetSonglistDetailResponse](
+                offset_key="song_begin",
+                page_size_key="song_num",
+                has_more_extractor=lambda r: bool(r.hasmore),
+                total_extractor=lambda r: r.total,
+                count_extractor=lambda response: len(response.songs),
             ),
-        )
+        ).with_extractor(lambda r: r.songs)
 
     def create(self, dirname: str, *, credential: Credential | None = None):
         """创建歌单.
@@ -80,12 +79,12 @@ class SonglistApi(ApiModule):
             dirname: 歌单名称.
             credential: 登录凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             module="music.musicasset.PlaylistBaseWrite",
             method="AddPlaylist",
             param={"dirName": dirname},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             response_model=CreateDeleteSonglistResp,
         )
 
@@ -99,12 +98,12 @@ class SonglistApi(ApiModule):
             dirid: 歌单目录 ID.
             credential: 登录凭证.
         """
-        target_credential = self._require_login(credential)
-        return self._build_request(
+        return self._build_cgi(
             module="music.musicasset.PlaylistBaseWrite",
             method="DelPlaylist",
             param={"dirId": dirid},
-            credential=target_credential,
+            credential=credential,
+            require_login=True,
             response_model=CreateDeleteSonglistResp,
         )
 
@@ -127,13 +126,13 @@ class SonglistApi(ApiModule):
         Returns:
             操作成功与否 (歌曲已存在于歌单中也返回 True).
         """
-        target_credential = self._require_login(credential)
         try:
-            data = await self._build_request(
+            data = await self._build_cgi(
                 module="music.musicasset.PlaylistDetailWrite",
                 method="AddSonglist",
                 param=_build_songlist_oper_param(dirid=dirid, song_info=song_info, tid=tid),
-                credential=target_credential,
+                credential=credential,
+                require_login=True,
                 preserve_bool=True,
             )
             return data.get("retCode") == 0
@@ -161,17 +160,57 @@ class SonglistApi(ApiModule):
         Returns:
             操作成功与否 (歌曲不存在于歌单中也返回 True).
         """
-        target_credential = self._require_login(credential)
         songs = song_info or []
         try:
-            data = await self._build_request(
+            data = await self._build_cgi(
                 module="music.musicasset.PlaylistDetailWrite",
                 method="DelSonglist",
                 param=_build_songlist_oper_param(dirid=dirid, song_info=songs, tid=tid),
-                credential=target_credential,
+                credential=credential,
+                require_login=True,
             )
             return data.get("retCode") == 0
         except CgiApiException as e:
             if e.code == 80092:
                 return False
             raise
+
+    async def like_song(
+        self,
+        song_info: list[tuple[int, int]],
+        *,
+        credential: Credential | None = None,
+    ) -> bool:
+        """收藏歌曲到 "我喜欢" 歌单.
+
+        Note:
+            "我喜欢" 歌单的目录 ID 固定为 201, 本方法即以 dirid=201 调用 `add_songs`.
+
+        Args:
+            song_info: 歌曲信息列表, 每项为 `(song_id, song_type)`.
+            credential: 登录凭证.
+
+        Returns:
+            操作成功与否 (歌曲已在 "我喜欢" 中也返回 True).
+        """
+        return await self.add_songs(201, song_info, credential=credential)
+
+    async def unlike_song(
+        self,
+        song_info: list[tuple[int, int]],
+        *,
+        credential: Credential | None = None,
+    ) -> bool:
+        """从 "我喜欢" 歌单移除歌曲.
+
+        Note:
+            "我喜欢" 歌单的目录 ID 固定为 201, 本方法即以 dirid=201 调用 `del_songs`.
+
+        Args:
+            song_info: 歌曲信息列表, 每项为 `(song_id, song_type)`.
+            credential: 登录凭证.
+
+        Returns:
+            操作成功与否 (歌曲不在 "我喜欢" 中也返回 True).
+        """
+        return await self.del_songs(201, song_info, credential=credential)

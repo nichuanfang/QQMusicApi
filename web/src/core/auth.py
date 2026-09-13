@@ -2,6 +2,9 @@
 
 import asyncio
 import logging
+import weakref
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from anyio.to_thread import run_sync
 from fastapi import HTTPException, Request
@@ -13,10 +16,36 @@ from .deps import get_credential_config, get_credential_store
 
 logger = logging.getLogger(__name__)
 
-_CREDENTIAL_LOCK_MAX_SIZE = 256
 
-_credential_refresh_locks: dict[int, asyncio.Lock] = {}
-_credential_refresh_locks_guard = asyncio.Lock()
+class KeyedLock:
+    """带有自动回收功能的每个 Key 独立的 asyncio 锁."""
+
+    def __init__(self) -> None:
+        """初始化锁的存储与保护器."""
+        self._locks: dict[int, asyncio.Lock] = {}
+        self._guard = asyncio.Lock()
+        self._finalizers: dict[int, object] = {}
+
+    @asynccontextmanager
+    async def __call__(self, key: int) -> AsyncIterator[asyncio.Lock]:
+        """获取指定 key 的独立锁, 支持上下文管理."""
+        async with self._guard:
+            if key not in self._locks:
+                lock = asyncio.Lock()
+                self._locks[key] = lock
+
+                def cleanup(_: weakref.ReferenceType, k: int = key) -> None:
+                    self._locks.pop(k, None)
+                    self._finalizers.pop(k, None)
+
+                ref = weakref.ref(lock, cleanup)
+                self._finalizers[key] = ref
+        lock = self._locks[key]
+        async with lock:
+            yield lock
+
+
+_credential_refresh_locks = KeyedLock()
 
 _STARTUP_CONCURRENCY = 5
 
@@ -40,24 +69,6 @@ def resolve_configured_default_credential(
     return cookie_credential
 
 
-async def _credential_refresh_lock(musicid: int) -> asyncio.Lock:
-    async with _credential_refresh_locks_guard:
-        lock = _credential_refresh_locks.get(musicid)
-        if lock is None:
-            lock = asyncio.Lock()
-            _credential_refresh_locks[musicid] = lock
-        if len(_credential_refresh_locks) > _CREDENTIAL_LOCK_MAX_SIZE:
-            _purge_idle_locks()
-        return lock
-
-
-def _purge_idle_locks() -> None:
-    """移除未被持有的空闲锁, 保留活跃锁."""
-    idle_keys = [mid for mid, lock in _credential_refresh_locks.items() if not lock.locked()]
-    for key in idle_keys[: len(idle_keys) // 2]:
-        del _credential_refresh_locks[key]
-
-
 async def _credential_is_expired(candidate: Credential, client: Client) -> bool:
     """判断凭证是否过期, 本地信息不足时通过 API 验证."""
     if credential_needs_refresh(candidate):
@@ -74,6 +85,18 @@ async def _credential_is_expired(candidate: Credential, client: Client) -> bool:
     return False
 
 
+async def refresh_and_store(client: Client, store: CredentialStore, credential: Credential) -> Credential:
+    """尝试通过 API 刷新凭证, 成功则保存到状态库, 失败则标记无效并抛出异常."""
+    try:
+        refreshed = await client.login.refresh_credential(credential)
+        await run_sync(store.update, refreshed)
+        return refreshed
+    except Exception:
+        logger.exception("凭证 %s 刷新或保存失败", credential.musicid)
+        await run_sync(store.mark_invalid, credential.musicid)
+        raise
+
+
 async def _refresh_configured_credential(
     *,
     store: CredentialStore,
@@ -81,8 +104,7 @@ async def _refresh_configured_credential(
     candidate: Credential,
 ) -> Credential | None:
     """刷新过期默认 Credential 并避免同账号并发刷新."""
-    lock = await _credential_refresh_lock(candidate.musicid)
-    async with lock:
+    async with _credential_refresh_locks(candidate.musicid):
         latest = await run_sync(store.get, candidate.musicid)
         current = latest or candidate
         if not credential_needs_refresh(current):
@@ -90,20 +112,11 @@ async def _refresh_configured_credential(
             return current
         logger.info("开始刷新凭证 %s", current.musicid)
         try:
-            refreshed = await client.login.refresh_credential(current)
+            refreshed = await refresh_and_store(client, store, current)
             logger.info("凭证 %s 刷新成功", current.musicid)
-        except Exception as exc:
-            logger.error("凭证 %s 刷新失败: %s", current.musicid, exc, exc_info=True)
-            store.mark_invalid(candidate.musicid)
-            logger.warning("凭证 %s 已标记为无效", candidate.musicid)
+            return refreshed
+        except Exception:
             return None
-        try:
-            await run_sync(store.update, refreshed)
-            logger.debug("凭证 %s 状态已保存", refreshed.musicid)
-        except Exception as exc:
-            logger.error("凭证 %s 持久化失败: %s", current.musicid, exc, exc_info=True)
-            raise HTTPException(status_code=500, detail="Credential 刷新结果持久化失败") from exc
-        return refreshed
 
 
 async def configured_credential_for_api(
@@ -194,25 +207,22 @@ async def startup_credential_health_check(client: Client, store: CredentialStore
             if credential_needs_refresh(credential):
                 logger.info("启动检查: 凭证 %s 需要刷新", musicid)
                 try:
-                    refreshed = await client.login.refresh_credential(credential)
-                    await run_sync(store.update, refreshed)
+                    await refresh_and_store(client, store, credential)
                     logger.info("启动检查: 凭证 %s 刷新成功", musicid)
                 except Exception as exc:
-                    logger.error("启动检查: 凭证 %s 刷新失败: %s", musicid, exc, exc_info=True)
-                    await run_sync(store.mark_invalid, musicid)
+                    logger.warning("启动检查: 凭证 %s 刷新未通过: %s", musicid, exc)
             elif credential.musickey_create_time > 0 and credential.key_expires_in <= 0:
                 logger.debug("启动检查: 凭证 %s 进行过期检查", musicid)
                 try:
                     expired = await client.login.check_expired(credential)
                     if expired:
                         logger.info("启动检查: 凭证 %s 已过期, 开始刷新", musicid)
-                        refreshed = await client.login.refresh_credential(credential)
-                        await run_sync(store.update, refreshed)
+                        await refresh_and_store(client, store, credential)
                         logger.info("启动检查: 凭证 %s 刷新成功", musicid)
                     else:
                         logger.debug("启动检查: 凭证 %s 有效", musicid)
-                except Exception as exc:
-                    logger.error("启动检查: 凭证 %s 检查失败: %s", musicid, exc, exc_info=True)
+                except Exception:
+                    logger.exception("启动检查: 凭证 %s 检查失败", musicid)
                     await run_sync(store.mark_invalid, musicid)
             else:
                 logger.debug("启动检查: 凭证 %s 有效", musicid)

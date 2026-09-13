@@ -3,6 +3,7 @@
 import pytest
 
 from qqmusic_api import Client
+from qqmusic_api.models.search import SearchSelector
 from qqmusic_api.modules.search import SearchType
 
 SEARCH_TYPE_RESULT_FIELDS = {
@@ -13,6 +14,7 @@ SEARCH_TYPE_RESULT_FIELDS = {
     SearchType.MV: "mv",
     SearchType.LYRIC: "song",
     SearchType.USER: "user",
+    SearchType.RINGTONE: "song",
     SearchType.AUDIO_ALBUM: "audio_alum",
     SearchType.AUDIO: "song",
 }
@@ -21,20 +23,20 @@ SEARCH_TYPE_RESULT_FIELDS = {
 async def test_get_hotkey(client: Client) -> None:
     """测试获取热搜词列表."""
     result = await client.search.get_hotkey()
-    assert result["ret_code"] == 0
-    assert result["vec_hotkey"]
+    assert result.ret_code == 0
+    assert result.vec_hotkey
 
 
 async def test_complete(client: Client) -> None:
     """测试搜索词补全建议."""
     result = await client.search.complete("周杰伦")
-    assert result["items"] or result["vec_related_items"] or result["vec_direct_items"]
+    assert result.items or result.vec_related_items or result.vec_direct_items
 
 
 async def test_quick_search(client: Client) -> None:
     """测试快速搜索."""
     result = await client.search.quick_search("周杰伦")
-    assert any(result.get(key) for key in ("song", "singer", "album", "mv"))
+    assert any(getattr(result, key).count for key in ("song", "singer", "album", "mv"))
 
 
 @pytest.mark.parametrize("page", [1, 2])
@@ -55,6 +57,7 @@ async def test_general_search(client: Client, page: int) -> None:
         (SearchType.MV, 1, 10),
         (SearchType.LYRIC, 1, 10),
         (SearchType.USER, 1, 10),
+        (SearchType.RINGTONE, 1, 10),
         (SearchType.AUDIO_ALBUM, 1, 10),
         (SearchType.AUDIO, 1, 10),
         (SearchType.SONG, 2, 5),
@@ -73,17 +76,25 @@ async def test_search_by_type_with_int(client: Client) -> None:
 
 
 async def test_search_by_type_paginate(client: Client) -> None:
-    """测试搜索分页支持 next 与 has_more."""
-    pager = client.search.search_by_type("周杰伦", num=5, page=1).paginate(limit=2)
+    """测试按类型搜索按页面迭代 (paginate)."""
+    req = client.search.search_by_type("周杰伦", num=5, page=1)
+    pages = [page async for page in req.paginate(limit=2)]
 
-    assert pager.has_more() is True
-    first_page = await pager.next()
-    assert pager.has_more() is True
-    second_page = await pager.next()
+    assert len(pages) == 2
+    assert pages[0].song
+    assert pages[1].song
+    assert pages[0].nextpage == 2
 
-    assert first_page.song
-    assert second_page.song
-    assert first_page.nextpage == 2
-    assert pager.has_more() is False
-    with pytest.raises(StopAsyncIteration):
-        await pager.next()
+
+async def test_search_by_type_with_selectors(client: Client) -> None:
+    """测试按类型搜索支持 selectors 筛选器参数."""
+    selectors = [SearchSelector(id=4558, name="默认", type=0)]
+    result = await client.search.search_by_type("周杰伦", search_type=SearchType.SONG, num=5, selectors=selectors)
+    assert result.song is not None
+
+
+async def test_search_by_type_iter_items(client: Client) -> None:
+    """测试搜索按条目迭代 (iter_items)."""
+    req = client.search.search_by_type("周杰伦", search_type=SearchType.SONG, num=5)
+    songs = [song async for song in req.iter_items(limit=10)]
+    assert len(songs) > 5
