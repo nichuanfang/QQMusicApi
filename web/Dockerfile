@@ -36,6 +36,10 @@ ENV PATH="/app/.venv/bin:$PATH" \
 USER appuser
 WORKDIR /app
 
+# 显式指定 uv 的缓存和配置目录到公共可写的 /tmp
+ENV UV_CACHE_DIR=/tmp/.uv_cache
+ENV UV_CONFIG_DIR=/tmp/.uv_config
+
 EXPOSE 8080
 
 CMD ["python", "web/run.py"]
