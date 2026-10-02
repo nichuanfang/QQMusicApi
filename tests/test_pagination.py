@@ -99,9 +99,16 @@ class MockClient:
         self.raw_pages = raw_pages
 
     async def execute(self, request: Any) -> Any:
-        """按请求页码取原始响应并交给请求描述符解析."""
+        """按请求页码取原始响应并交给统一解析器解析."""
+        from qqmusic_api.core.response import parse_cgi_item
+
         raw = self.raw_pages[request.param["page"]]
-        return request._parse_response(raw)
+        return parse_cgi_item(
+            raw,
+            allow_error_codes=request.allow_error_codes,
+            parse_on_allow=request.parse_on_allow,
+            response_model=request.response_model,
+        )
 
 
 def _offset_strategy(page_size: int) -> OffsetStrategy[DummyResponse]:
@@ -178,7 +185,7 @@ def _cgi_client() -> MockClient:
 def _cgi_request() -> PaginatedCgiRequest:
     """构造基于页码策略的两页 CGI 测试请求."""
     return PaginatedCgiRequest(
-        _client=cast("Any", _cgi_client()),
+        _executor=cast("Any", _cgi_client()),
         module="test",
         method="test",
         param={"page": 1},

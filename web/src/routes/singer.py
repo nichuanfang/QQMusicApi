@@ -1,48 +1,27 @@
 """歌手 Web 路由契约."""
 
-from qqmusic_api.models.singer import (
-    HomepageHeaderResponse,
-    HomepageTabDetailResponse,
-    SimilarSingerResponse,
-    SingerAlbumListResponse,
-    SingerDetailResponse,
-    SingerIndexPageResponse,
-    SingerMvListResponse,
-    SingerNameSpecialDisplayResponse,
-    SingerSongListResponse,
-    SingerTypeListResponse,
-)
-from qqmusic_api.modules.singer import TabType
+from qqmusic_api.models.singer import SingerDetailResponse
+from qqmusic_api.modules.singer import AreaType, GenreType, IndexType, SexType, SingerApi
 
 from ..routing.route_types import PUBLIC_300, PUBLIC_600, WebRoute
-from ._helpers import (
-    MID,
-    SINGER_DESC_OPTIONS,
-    SINGER_INDEX,
-    SINGER_PAGE,
-    SINGER_SIMILAR_PAGE,
-    SINGER_TAB_PAGE,
-    SINGER_TYPE,
-    P,
-    Q,
-    R,
+from ._helpers import P, Q, R
+
+SINGER_TYPE = (
+    Q("area", AreaType),
+    Q("sex", SexType),
+    Q("genre", GenreType),
 )
+SINGER_INDEX = (*SINGER_TYPE, Q("index", IndexType))
 
 ROUTES: tuple[WebRoute, ...] = (
     R(
-        "singer",
-        "get_album_list",
+        SingerApi.get_album_list,
         "/singer/{mid}/albums",
-        SingerAlbumListResponse,
-        params=(*MID, *SINGER_PAGE),
         cache=PUBLIC_300,
     ),
     R(
-        "singer",
-        "get_desc",
+        SingerApi.get_desc,
         "/singer/get_desc",
-        SingerDetailResponse,
-        params=(Q("mids", list[str], description="歌手 MID 列表."), *SINGER_DESC_OPTIONS),
         cache=PUBLIC_300,
     ),
     R(
@@ -50,64 +29,52 @@ ROUTES: tuple[WebRoute, ...] = (
         "get_desc_by_mid",
         "/singer/{mid}/desc",
         SingerDetailResponse,
-        params=(*MID, *SINGER_DESC_OPTIONS),
+        params=(
+            P("mid", str, "歌手 MID."),
+            Q("ex_singer", bool, default=True, description="是否返回扩展描述信息."),
+            Q("wiki_singer", bool, default=True, description="是否返回百科 XML 数据."),
+            Q("group_singer", bool, default=True, description="是否返回组合成员信息."),
+            Q("pic", bool, default=True, description="是否返回头像/立绘图片 URL."),
+            Q("photos", bool, default=True, description="是否返回相册大图列表."),
+        ),
         cache=PUBLIC_300,
     ),
-    R("singer", "get_info", "/singer/{mid}/info", HomepageHeaderResponse, params=MID, cache=PUBLIC_300),
+    R(SingerApi.get_info, "/singer/{mid}/info", cache=PUBLIC_300),
     R(
-        "singer",
-        "get_name_special_display",
+        SingerApi.get_name_special_display,
         "/singer/{mid}/name-special-display",
-        SingerNameSpecialDisplayResponse,
-        params=MID,
         cache=PUBLIC_600,
     ),
     R(
-        "singer",
-        "get_mv_list",
+        SingerApi.get_mv_list,
         "/singer/{mid}/mvs",
-        SingerMvListResponse,
-        params=(*MID, *SINGER_PAGE),
         cache=PUBLIC_600,
     ),
     R(
-        "singer",
-        "get_similar",
+        SingerApi.get_similar,
         "/singer/{mid}/similar",
-        SimilarSingerResponse,
-        params=(*MID, *SINGER_SIMILAR_PAGE),
         cache=PUBLIC_600,
     ),
     R(
-        "singer",
-        "get_singer_list",
+        SingerApi.get_singer_list,
         "/singer/get_singer_list",
-        SingerTypeListResponse,
         params=SINGER_TYPE,
         cache=PUBLIC_300,
     ),
     R(
-        "singer",
-        "get_singer_list_index",
+        SingerApi.get_singer_list_index,
         "/singer/get_singer_list_index",
-        SingerIndexPageResponse,
         params=SINGER_INDEX,
         cache=PUBLIC_300,
     ),
     R(
-        "singer",
-        "get_songs_list",
+        SingerApi.get_songs_list,
         "/singer/{mid}/songs",
-        SingerSongListResponse,
-        params=(*MID, *SINGER_PAGE),
         cache=PUBLIC_300,
     ),
     R(
-        "singer",
-        "get_tab_detail",
+        SingerApi.get_tab_detail,
         "/singer/{mid}/tabs/{tab_type}",
-        HomepageTabDetailResponse,
-        params=(*MID, P("tab_type", TabType, "Tab 类型."), *SINGER_TAB_PAGE),
         cache=PUBLIC_600,
     ),
 )

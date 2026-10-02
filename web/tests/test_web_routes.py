@@ -1,8 +1,30 @@
 """Web 路由注册测试."""
 
-from fastapi import FastAPI
-from fastapi.routing import APIRoute
+import json
+from typing import Any, cast
 
+import pytest
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, ValidationError
+
+from qqmusic_api.core.exceptions import (
+    ApiDataError,
+    BaseApiException,
+    CredentialExpiredError,
+    CredentialInvalidError,
+    CredentialRefreshError,
+    HTTPError,
+    LoginError,
+    NetworkError,
+    RatelimitedError,
+    TimeoutNetworkError,
+)
+from qqmusic_api.modules.search import SearchApi
+from qqmusic_api.modules.song import SongApi
+from web.src.app import _base_api_exception_status_code
+from web.src.modules.song import QuerySongRequest, SongQueryItem, SongUrlItem, SongUrlsRequest
 from web.src.routes import ROUTES
 from web.src.routing.route_types import AuthPolicy
 from web.src.routing.router_factory import _resolve_route, validate_routes
@@ -126,6 +148,13 @@ def test_representative_route_parameters_are_registered(app: FastAPI) -> None:
     assert "requestBody" in schema["paths"]["/song/get_song_urls"]["post"]
 
 
+def test_pilot_routes_reference_sdk_endpoints() -> None:
+    """测试试点路由直接引用 SDK 端点并复用响应模型."""
+    endpoints = {route.endpoint for route in RESOLVED_ROUTES if route.endpoint is not None}
+
+    assert {SongApi.get_detail, SearchApi.quick_search, SearchApi.search_by_type} <= endpoints
+
+
 def test_song_file_type_uses_integer_mapping_with_description(app: FastAPI) -> None:
     """测试歌曲文件类型使用整数映射并列出说明."""
     schema = app.openapi()
@@ -146,3 +175,100 @@ def test_adapter_routes_use_chinese_docs_not_route_keys(app: FastAPI) -> None:
     ]
     assert all(summary for summary in all_summaries)
     assert not any("." in summary for summary in all_summaries)
+
+
+@pytest.mark.parametrize(
+    ("exception", "expected_status"),
+    [
+        (CredentialInvalidError("invalid"), 401),
+        (CredentialExpiredError(code=1000), 401),
+        (CredentialRefreshError(code=1000), 401),
+        (RatelimitedError(code=2001), 429),
+        (LoginError(code=20261), 400),
+        (HTTPError("upstream", 500), 502),
+        (ApiDataError("invalid payload"), 502),
+        (NetworkError("network"), 503),
+        (TimeoutNetworkError("timeout"), 504),
+    ],
+)
+def test_sdk_exceptions_map_to_stable_http_status(exception: BaseApiException, expected_status: int) -> None:
+    """测试 SDK 公共异常映射为稳定的 HTTP 状态码."""
+    assert _base_api_exception_status_code(exception) == expected_status
+
+
+UPSTREAM_LEAK_TEXT = (
+    "AsyncHTTPConnectionPool(host=upstream.internal, port=9): Max retries exceeded with url: "
+    "/cgi-bin/musicu.fcg?guid=ABCDEF&uin=123456"
+)
+
+
+async def _error_response(app: FastAPI, handler_key: type[Exception], exception: Exception) -> JSONResponse:
+    """调用已注册的异常处理器."""
+    handler = cast("Any", app.exception_handlers[handler_key])
+    return cast("JSONResponse", await handler(cast("Request", None), exception))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exception", "expected_status", "expected_message"),
+    [
+        (NetworkError(UPSTREAM_LEAK_TEXT), 503, "上游服务暂不可用"),
+        (TimeoutNetworkError(UPSTREAM_LEAK_TEXT), 504, "上游服务响应超时"),
+        (HTTPError(UPSTREAM_LEAK_TEXT, 500), 502, "上游服务响应异常"),
+        (ApiDataError("缺少以下索引结果: [0]"), 502, "上游服务响应异常"),
+    ],
+)
+async def test_upstream_5xx_response_hides_upstream_details(
+    app: FastAPI,
+    exception: BaseApiException,
+    expected_status: int,
+    expected_message: str,
+) -> None:
+    """测试上游 5xx 只回显稳定文案, 不泄漏上游地址, 设备 guid 与 uin."""
+    response = await _error_response(app, BaseApiException, exception)
+
+    assert response.status_code == expected_status
+    assert json.loads(bytes(response.body)) == {"code": -1, "msg": expected_message}
+
+
+@pytest.mark.asyncio
+async def test_client_error_response_keeps_sdk_business_hint(app: FastAPI) -> None:
+    """测试 4xx 仍回显 SDK 业务说明."""
+    response = await _error_response(app, BaseApiException, LoginError("验证码错误", code=20271))
+
+    assert response.status_code == 400
+    assert json.loads(bytes(response.body))["msg"] == "验证码错误"
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_returns_json_500(app: FastAPI) -> None:
+    """测试未捕获异常返回 JSON 形状的 500, 不回显异常细节."""
+    response = await _error_response(app, Exception, RuntimeError("Engine 已关闭或正在关闭, 不能发起新操作"))
+
+    assert response.status_code == 500
+    assert json.loads(bytes(response.body)) == {"code": -1, "msg": "服务器内部错误"}
+
+
+@pytest.mark.asyncio
+async def test_negative_cache_fast_fail_matches_upstream_failure_response(app: FastAPI) -> None:
+    """测试负缓存 fast-fail 与上游 5xx 的对外响应完全一致."""
+    upstream = await _error_response(app, BaseApiException, NetworkError(UPSTREAM_LEAK_TEXT))
+    fast_fail = await _error_response(app, HTTPException, HTTPException(status_code=503))
+
+    assert upstream.status_code == fast_fail.status_code == 503
+    assert upstream.body == fast_fail.body
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (SongUrlsRequest, {"file_info": [SongUrlItem(mid="0039MnYb0qxYAc")] * (SongApi._GET_SONG_URLS_MAX_MID + 1)}),
+        (QuerySongRequest, {"query_info": []}),
+        (SongQueryItem, {"id": 1, "mid": "0039MnYb0qxYAc"}),
+        (SongQueryItem, {}),
+    ],
+)
+def test_song_request_models_reject_invalid_payload(model: type[BaseModel], payload: dict[str, Any]) -> None:
+    """测试歌曲请求模型拒绝越界数量与歧义标识."""
+    with pytest.raises(ValidationError):
+        model(**payload)

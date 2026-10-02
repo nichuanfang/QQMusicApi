@@ -16,22 +16,18 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
 import qqmusic_api
-from qqmusic_api import Client
-from qqmusic_api.core.exceptions import (
-    BaseApiException,
-    CredentialExpiredError,
-    CredentialInvalidError,
-    CredentialRefreshError,
-    LoginError,
-    RatelimitedError,
-)
+from qqmusic_api.core.engine import RequestEngine
+from qqmusic_api.core.exceptions import BaseApiException
 
 from . import modules  # noqa: F401
-from .core.auth import startup_credential_health_check
 from .core.cache import MemoryBackend, RedisBackend
+from .core.coalesce import Coalescer
 from .core.config import SecurityConfig, settings
+from .core.credential_pool import CredentialPool
 from .core.credential_store import ACCOUNT_CONFIG_FILE, CredentialStore, load_account_configs
 from .core.deps import WebServices
+from .core.error_mapping import HTTP_ERROR_MESSAGES as _HTTP_ERROR_MESSAGES
+from .core.error_mapping import api_exception_status_code as _base_api_exception_status_code
 from .core.response import ErrorResponse, error_response
 from .core.security import apply_security_middleware, configure_security
 from .routes import ROUTES
@@ -43,18 +39,12 @@ logger = logging.getLogger(__name__)
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {"model": ErrorResponse},
     401: {"model": ErrorResponse},
-    429: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
-}
-
-
-_HTTP_ERROR_MESSAGES = {
-    400: "请求错误",
-    401: "未授权",
-    403: "禁止访问",
-    404: "资源不存在",
-    422: "请求参数校验失败",
-    500: "服务器内部错误",
+    429: {"model": ErrorResponse},
+    500: {"model": ErrorResponse},
+    502: {"model": ErrorResponse},
+    503: {"model": ErrorResponse},
+    504: {"model": ErrorResponse},
 }
 
 
@@ -67,15 +57,22 @@ def _http_exception_message(exc: StarletteHTTPException) -> str:
     return _HTTP_ERROR_MESSAGES.get(exc.status_code, "HTTP 请求错误")
 
 
-def _base_api_exception_status_code(exc: BaseApiException) -> int:
-    """将 SDK 异常映射为对外 HTTP 状态码."""
-    if isinstance(exc, RatelimitedError):
-        return 429
-    if isinstance(exc, (CredentialInvalidError, CredentialExpiredError, CredentialRefreshError)):
-        return 401
-    if isinstance(exc, LoginError):
-        return 400
-    return 400
+async def _cleanup_services(services: WebServices) -> None:
+    """安全释放 Web 服务中的全部已分配资源."""
+    try:
+        await services.cache.close()
+    except Exception:
+        logger.exception("关闭缓存异常")
+    if services.credential_pool is not None:
+        try:
+            services.credential_pool.close()
+        except Exception:
+            logger.exception("关闭凭证池异常")
+    try:
+        if services.engine is not None:
+            await services.engine.close()
+    except Exception:
+        logger.exception("关闭请求引擎异常")
 
 
 @asynccontextmanager
@@ -83,46 +80,36 @@ async def _lifespan(app: FastAPI):
     logger.info("Web 应用启动中...")
     services: WebServices = app.state.services
     try:
-        logger.info("初始化 SDK Client...")
-        services.client = Client(device_path=settings.client.device_path)
-        logger.debug("SDK Client 初始化完成")
+        logger.info("初始化 RequestEngine...")
+        services.engine = RequestEngine.create(device_path=settings.client.device_path)
+        logger.debug("RequestEngine 初始化完成")
 
         logger.debug("配置全局凭证设置...")
         services.credential_config = settings.credential
 
-        logger.info(f"初始化凭证存储: {settings.credential.store.path}")
-        services.credential_store = CredentialStore(settings.credential.store.path)
-        services.credential_store.initialize()
+        logger.info(f"初始化共享凭证池: {settings.credential.store.path}")
+        credential_store = CredentialStore(settings.credential.store.path)
+        credential_store.initialize()
+        services.credential_pool = CredentialPool(credential_store)
 
         logger.info("同步账号种子配置...")
-        services.credential_store.sync_accounts(load_account_configs(ACCOUNT_CONFIG_FILE))
+        services.credential_pool.sync_accounts(load_account_configs(ACCOUNT_CONFIG_FILE))
 
         logger.info("执行启动凭证健康检查...")
-        await startup_credential_health_check(services.client, services.credential_store)
+        await services.credential_pool.health_check(services.require_engine)
 
         logger.info("Web 应用启动完成")
     except Exception:
         logger.exception("Web 应用启动失败")
+        await _cleanup_services(services)
         raise
 
-    yield
-
-    logger.info("Web 应用关闭中...")
     try:
-        await services.cache.close()
-    except Exception:
-        logger.exception("关闭缓存异常")
-    try:
-        if services.credential_store is not None:
-            services.credential_store.close()
-    except Exception:
-        logger.exception("关闭凭证存储异常")
-    try:
-        if services.client is not None:
-            await services.client.close()
-    except Exception:
-        logger.exception("关闭 SDK Client 异常")
-    logger.info("Web 应用关闭完成")
+        yield
+    finally:
+        logger.info("Web 应用关闭中...")
+        await _cleanup_services(services)
+        logger.info("Web 应用关闭完成")
 
 
 def _configure_cors(app: FastAPI) -> None:
@@ -191,7 +178,12 @@ def create_app() -> FastAPI:
     else:
         cache = MemoryBackend(_max_size=settings.cache.memory_max_size)
 
-    app.state.services = WebServices(cache=cache, security=None)
+    app.state.services = WebServices(
+        cache=cache,
+        security=None,
+        cache_config=settings.cache,
+        coalescer=Coalescer(wait_timeout=settings.cache.coalesce_wait_timeout_seconds),
+    )
     configure_security(app, settings.security)
     app.middleware("http")(apply_security_middleware)
 
@@ -225,10 +217,16 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(BaseApiException)
     async def _handle_base_api_exception(_request: Request, exc: BaseApiException) -> JSONResponse:
-        return error_response(
-            status_code=_base_api_exception_status_code(exc),
-            msg=str(exc),
-        )
+        status_code = _base_api_exception_status_code(exc)
+        if status_code < 500:
+            return error_response(status_code=status_code, msg=str(exc))
+        logger.error("上游请求失败: %d", status_code, exc_info=exc)
+        return error_response(status_code=status_code, msg=_HTTP_ERROR_MESSAGES.get(status_code, "上游服务异常"))
+
+    @app.exception_handler(Exception)
+    async def _handle_unexpected_exception(_request: Request, exc: Exception) -> JSONResponse:
+        logger.error("未捕获异常", exc_info=exc)
+        return error_response(status_code=500, msg=_HTTP_ERROR_MESSAGES[500])
 
     @app.exception_handler(HTTPException)
     @app.exception_handler(StarletteHTTPException)

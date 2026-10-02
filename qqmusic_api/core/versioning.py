@@ -1,12 +1,16 @@
 """请求版本策略中心."""
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING
+from xml.sax.saxutils import escape
 
 from ..models.request import CommonParams, Credential
-from ..utils.common import hash33
-from ..utils.device import Device
+
+if TYPE_CHECKING:
+    from ..utils.android_session import AndroidSession
+    from ..utils.device import Device
 
 
 class Platform(str, Enum):
@@ -26,23 +30,21 @@ class VersionProfile:
     v: int | None = None
     platform: str | None = None
     ua_version: int | None = None
-    qimei_app_version: str | None = None
-    qimei_sdk_version: str | None = None
+    qimei_app_version: str = "14.9.0.8"
+    qimei_sdk_version: str = "1.2.13.6"
 
 
 @dataclass(slots=True)
 class VersionPolicy:
-    """请求版本策略."""
+    """请求版本策略.
+
+    版本策略在 RequestEngine 生命周期内固定; 公参按次生成, 不持有
+    全局可变缓存.
+    """
 
     android: VersionProfile
     desktop: VersionProfile
     web: VersionProfile
-    _comm_cache: dict[tuple, dict[str, Any]] = field(
-        init=False,
-        default_factory=dict,
-        repr=False,
-        compare=False,
-    )
 
     def get_profile(self, platform: Platform) -> VersionProfile:
         """获取平台对应的版本档案.
@@ -63,10 +65,11 @@ class VersionPolicy:
         self,
         platform: Platform,
         credential: Credential,
-        device: Device,
-        qimei: dict[str, str] | None,
+        device: "Device",
+        qimei: Mapping[str, str] | None,
         guid: str,
-    ) -> dict[str, Any]:
+        session: "AndroidSession | None" = None,
+    ) -> dict[str, str]:
         """构建统一 comm 参数.
 
         Args:
@@ -75,33 +78,16 @@ class VersionPolicy:
             device: 设备信息.
             qimei: QIMEI 缓存.
             guid: 客户端 GUID.
+            session: Android 会话值 (AndroidSession); 仅 ANDROID 平台使用,
+                显式注入而非读取设备共享会话槽.
 
         Returns:
-            构建后的 comm 参数字典.
+            值均已转换为字符串的 comm 参数字典.
         """
-        cache_key = (
-            platform,
-            credential,
-            (
-                device.android_id,
-                device.version.release,
-                device.model,
-                device.version.sdk,
-                device.fingerprint,
-                device.session_uid,
-                device.session_sid,
-            )
-            if platform == Platform.ANDROID
-            else (),
-            tuple(sorted(qimei.items())) if qimei else None,
-            guid,
-        )
-        cached = self._comm_cache.get(cache_key)
-        if cached is not None:
-            return cached.copy()
-
         profile = self.get_profile(platform)
         if platform == Platform.ANDROID:
+            session_uid = getattr(session, "uid", None)
+            session_sid = getattr(session, "sid", None)
             params = CommonParams(
                 ct=profile.ct,
                 cv=profile.cv,
@@ -111,19 +97,15 @@ class VersionPolicy:
                 authst=credential.musickey or None,
                 tmeAppID="qqmusic",
                 tmeLoginType=credential.login_type or None,
-                QIMEI=qimei["q16"] if qimei is not None else "",
                 QIMEI36=qimei["q36"] if qimei is not None else "",
                 OpenUDID=guid,
                 udid=guid,
-                uid=device.session_uid,
-                OpenUDID2=guid,
-                sid=device.session_sid,
+                uid=session_uid,
+                OpenUDID2=device.open_udid2,
+                sid=session_sid,
                 aid=device.android_id,
                 os_ver=device.version.release,
-                phonetype=device.model,
-                devicelevel=str(device.version.sdk),
-                newdevicelevel=str(device.version.sdk),
-                rom=device.fingerprint,
+                phonetype=escape(device.model, {'"': "&quot;"}),
             )
         elif platform == Platform.DESKTOP:
             params = CommonParams(
@@ -152,12 +134,9 @@ class VersionPolicy:
                 need_new_code=1,
             )
 
-        comm = params.model_dump(by_alias=True, exclude_none=True)
+        return {key: str(value) for key, value in params.model_dump(by_alias=True, exclude_none=True).items()}
 
-        self._comm_cache[cache_key] = comm
-        return comm.copy()
-
-    def get_user_agent(self, platform: Platform, device: Device) -> str:
+    def get_user_agent(self, platform: Platform, device: "Device") -> str:
         """根据平台获取 UA.
 
         Args:
@@ -176,24 +155,6 @@ class VersionPolicy:
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
 
-    def get_qimei_app_version(self) -> str:
-        """获取 QIMEI 请求 appVersion.
-
-        Returns:
-            QIMEI appVersion.
-        """
-        profile = self.get_profile(Platform.ANDROID)
-        return profile.qimei_app_version or "14.9.0.8"
-
-    def get_qimei_sdk_version(self) -> str:
-        """获取 QIMEI 请求 sdkVersion.
-
-        Returns:
-            QIMEI sdkVersion.
-        """
-        profile = self.get_profile(Platform.ANDROID)
-        return profile.qimei_sdk_version or "1.2.13.6"
-
     @staticmethod
     def get_g_tk(credential: Credential) -> int:
         """计算 g_tk.
@@ -205,6 +166,8 @@ class VersionPolicy:
             计算后的 g_tk.
         """
         if credential.musickey:
+            from ..utils.common import hash33
+
             return hash33(credential.musickey, 5381)
         return 5381
 

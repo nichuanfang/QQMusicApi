@@ -3,9 +3,9 @@
 from enum import Enum
 from typing import Any, NamedTuple
 
-from qqmusic_api import Platform
-
+from ..core.endpoint import CgiEndpointMeta, CgiRequestData, cgi_endpoint
 from ..core.pagination import BatchRefreshStrategy
+from ..core.versioning import Platform
 from ..models.request import Credential
 from ..models.song import (
     GetCdnDispatchResponse,
@@ -21,6 +21,8 @@ from ..models.song import (
     GetSongUrlsResponse,
     HasSheetMusicResponse,
     QuerySongResponse,
+    RelatedMv,
+    RelatedPlaylist,
 )
 from ..utils import get_guid
 from ._base import ApiModule
@@ -204,16 +206,55 @@ class SongQueryInfo(NamedTuple):
     song_type: int | None = None
 
 
+_GET_SONG_URLS_MAX_MID = 100
+
+VKEY_META = CgiEndpointMeta(
+    key="song.get_song_urls",
+    module="music.vkey.GetVkey",
+    method="UrlGetVkey",
+    response_model=GetSongUrlsResponse,
+)
+EVKEY_META = CgiEndpointMeta(
+    key="song.get_song_urls.encrypted",
+    module="music.vkey.GetEVkey",
+    method="CgiGetEVkey",
+    response_model=GetSongUrlsResponse,
+)
+DEFAULT_SHEET_META = CgiEndpointMeta(
+    key="song.get_sheet",
+    module="music.mir.SheetMusicSvr",
+    method="GetMoreSheetMusic",
+    response_model=GetSheetResponse,
+    allow_error_codes=(10007,),
+    parse_on_allow=True,
+)
+CHONGCHONG_SHEET_META = CgiEndpointMeta(
+    key="song.get_sheet.chongchong",
+    module="music.mir.SheetMusicSvr",
+    method="GetChongChongSheetMusic",
+    response_model=GetSheetResponse,
+    sign=True,
+    allow_error_codes=(10007,),
+    parse_on_allow=True,
+)
+
+
 class SongApi(ApiModule):
     """歌曲相关 API 模块类."""
 
-    _GET_SONG_URLS_MAX_MID = 100
+    _GET_SONG_URLS_MAX_MID = _GET_SONG_URLS_MAX_MID
     _SONG_URL_FALLBACK_DOMAIN = "https://isure.stream.qqmusic.qq.com/"
 
+    @cgi_endpoint(
+        key="song.query_song",
+        module="music.trackInfo.UniformRuleCtrl",
+        method="CgiGetTrackInfo",
+        response_model=QuerySongResponse,
+    )
     def query_song(
         self,
         song_info: list[SongQueryInfo],
-    ):
+    ) -> CgiRequestData:
         """批量获取歌曲信息.
 
         Args:
@@ -248,33 +289,37 @@ class SongApi(ApiModule):
         if mids:
             params["mids"] = mids
 
-        return self._build_cgi(
-            module="music.trackInfo.UniformRuleCtrl",
-            method="CgiGetTrackInfo",
-            param=params,
-            response_model=QuerySongResponse,
-        )
+        return CgiRequestData(param=params)
 
-    def get_cdn_dispatch(self):
+    @cgi_endpoint(
+        key="song.get_cdn_dispatch",
+        module="music.audioCdnDispatch.cdnDispatch",
+        method="GetCdnDispatch",
+        response_model=GetCdnDispatchResponse,
+    )
+    def get_cdn_dispatch(self) -> CgiRequestData:
         """获取音频链接 CDN 信息."""
-        return self._build_cgi(
-            module="music.audioCdnDispatch.cdnDispatch",
-            method="GetCdnDispatch",
+        return CgiRequestData(
             param={
                 "guid": get_guid(),
                 "uid": "0",
                 "use_new_domain": 1,
                 "use_ipv6": 1,
             },
-            response_model=GetCdnDispatchResponse,
         )
 
+    @cgi_endpoint(
+        key="song.get_song_urls",
+        module="music.vkey.GetVkey",
+        method="UrlGetVkey",
+        response_model=GetSongUrlsResponse,
+    )
     def get_song_urls(
         self,
         file_info: list[SongFileInfo],
         file_type: BaseSongFileType = SongFileType.MP3_128,
         credential: Credential | None = None,
-    ):
+    ) -> CgiRequestData:
         """获取歌曲文件链接.
 
         Args:
@@ -289,16 +334,12 @@ class SongApi(ApiModule):
             raise ValueError(f"mid 数量不能超过 {self._GET_SONG_URLS_MAX_MID}, 当前为 {len(file_info)}")
 
         encrypted = isinstance(file_type, EncryptedSongFileType)
-        module, method = (
-            ("music.vkey.GetVkey", "UrlGetVkey") if not encrypted else ("music.vkey.GetEVkey", "CgiGetEVkey")
-        )
         songmid: list[str] = []
         filename: list[str] = []
         songtype: list[int] = []
         for item in file_info:
             songmid.append(item.mid)
             final_file_type = item.file_type or file_type
-
             filename.append(
                 f"{final_file_type.s}{item.mid}{item.mid}{final_file_type.e}"
                 if not item.media_mid
@@ -306,22 +347,28 @@ class SongApi(ApiModule):
             )
             songtype.append(item.song_type or 0)
 
-        return self._build_cgi(
-            module=module,
-            method=method,
+        resolved_credential = credential or self._executor.credential
+        return CgiRequestData(
+            meta=EVKEY_META if encrypted else VKEY_META,
+            credential=credential,
             param={
-                "uin": self._client.credential.str_musicid if not credential else credential.str_musicid,
+                "uin": resolved_credential.str_musicid,
                 "filename": filename,
                 "guid": get_guid(),
                 "songmid": songmid,
                 "songtype": songtype,
                 "ctx": 0,
             },
-            response_model=GetSongUrlsResponse,
-            credential=credential,
         )
 
-    def get_detail(self, value: int | str):
+    @cgi_endpoint(
+        key="song.get_detail",
+        module="music.pf_song_detail_svr",
+        method="get_song_detail_yqq",
+        platform=Platform.WEB,
+        response_model=GetSongDetailResponse,
+    )
+    def get_detail(self, value: int | str) -> CgiRequestData:
         """获取歌曲详细信息.
 
         固定使用 Web 平台.
@@ -334,79 +381,91 @@ class SongApi(ApiModule):
             if isinstance(value, int) or (isinstance(value, str) and value.isdecimal())
             else {"song_mid": value}
         )
-        return self._build_cgi(
-            module="music.pf_song_detail_svr",
-            method="get_song_detail_yqq",
-            param=param,
-            platform=Platform.WEB,
-            response_model=GetSongDetailResponse,
-        )
+        return CgiRequestData(param=param)
 
-    def get_similar_song(self, songid: int):
+    @cgi_endpoint(
+        key="song.get_similar_song",
+        module="music.recommend.TrackRelationServer",
+        method="GetSimilarSongs",
+        response_model=GetSimilarSongResponse,
+    )
+    def get_similar_song(self, songid: int) -> CgiRequestData:
         """获取相似歌曲.
 
         Args:
             songid: 歌曲 ID.
         """
-        return self._build_cgi(
-            module="music.recommend.TrackRelationServer",
-            method="GetSimilarSongs",
-            param={"songid": songid},
-            response_model=GetSimilarSongResponse,
-        )
+        return CgiRequestData(param={"songid": songid})
 
-    def get_labels(self, songid: int):
+    @cgi_endpoint(
+        key="song.get_labels",
+        module="music.recommend.TrackRelationServer",
+        method="GetSongLabels",
+        response_model=GetSongLabelsResponse,
+    )
+    def get_labels(self, songid: int) -> CgiRequestData:
         """获取歌曲标签.
 
         Args:
             songid: 歌曲 ID.
         """
-        return self._build_cgi(
-            module="music.recommend.TrackRelationServer",
-            method="GetSongLabels",
-            param={"songid": songid},
-            response_model=GetSongLabelsResponse,
-        )
+        return CgiRequestData(param={"songid": songid})
 
-    def get_related_songlist(self, songid: int, last: list[int] | None = None):
+    @cgi_endpoint(
+        key="song.get_related_songlist",
+        module="music.recommend.TrackRelationServer",
+        method="GetRelatedPlaylist",
+        response_model=GetRelatedSonglistResponse,
+        item_type=RelatedPlaylist,
+    )
+    def get_related_songlist(self, songid: int, last: list[int] | None = None) -> CgiRequestData:
         """获取歌曲相关歌单.
 
         Args:
             songid: 歌曲 ID.
             last: 上次请求的相关歌单 ID 列表, 用于换一批歌单.
         """
-        return self._build_cgi(
-            module="music.recommend.TrackRelationServer",
-            method="GetRelatedPlaylist",
+        return CgiRequestData(
             param={"songid": songid, "vecPlaylist": last or []},
-            response_model=GetRelatedSonglistResponse,
             pager_strategy=BatchRefreshStrategy[GetRelatedSonglistResponse](
                 refresh_key="vecPlaylist",
                 has_more_extractor=lambda r: bool(r.has_more),
                 cursor_extractor=lambda r: [playlist.id for playlist in r.songlist] if r.songlist else None,
             ),
-        ).with_extractor(lambda r: r.songlist)
+            items_extractor=lambda r: r.songlist,
+        )
 
-    def get_related_mv(self, songid: int, last_mvid: str | None = None):
+    @cgi_endpoint(
+        key="song.get_related_mv",
+        module="MvService.MvInfoProServer",
+        method="GetSongRelatedMv",
+        response_model=GetRelatedMvResponse,
+        item_type=RelatedMv,
+    )
+    def get_related_mv(self, songid: int, last_mvid: str | None = None) -> CgiRequestData:
         """获取歌曲相关 MV.
 
         Args:
             songid: 歌曲 ID.
             last_mvid: 上一个 MV 的 VID (可选).
         """
-        return self._build_cgi(
-            module="MvService.MvInfoProServer",
-            method="GetSongRelatedMv",
+        return CgiRequestData(
             param={"songid": str(songid), "songtype": 1, "lastmvid": last_mvid or 0},
-            response_model=GetRelatedMvResponse,
             pager_strategy=BatchRefreshStrategy[GetRelatedMvResponse](
                 refresh_key="lastmvid",
                 has_more_extractor=lambda r: bool(r.has_more),
                 cursor_extractor=lambda r: r.mv[-1].id if r.mv else None,
             ),
-        ).with_extractor(lambda r: r.mv)
+            items_extractor=lambda r: r.mv,
+        )
 
-    def get_other_version(self, value: int | str):
+    @cgi_endpoint(
+        key="song.get_other_version",
+        module="music.musichallSong.OtherVersionServer",
+        method="GetOtherVersionSongs",
+        response_model=GetOtherVersionResponse,
+    )
+    def get_other_version(self, value: int | str) -> CgiRequestData:
         """获取歌曲其他版本.
 
         Args:
@@ -417,14 +476,15 @@ class SongApi(ApiModule):
             if isinstance(value, int) or (isinstance(value, str) and value.isdecimal())
             else {"songmid": value}
         )
-        return self._build_cgi(
-            module="music.musichallSong.OtherVersionServer",
-            method="GetOtherVersionSongs",
-            param=param,
-            response_model=GetOtherVersionResponse,
-        )
+        return CgiRequestData(param=param)
 
-    def get_producer(self, value: int | str):
+    @cgi_endpoint(
+        key="song.get_producer",
+        module="music.sociality.KolWorksTag",
+        method="SongProducer",
+        response_model=GetProducerResponse,
+    )
+    def get_producer(self, value: int | str) -> CgiRequestData:
         """获取歌曲制作人信息.
 
         Args:
@@ -435,14 +495,15 @@ class SongApi(ApiModule):
             if isinstance(value, int) or (isinstance(value, str) and value.isdecimal())
             else {"songmid": value}
         )
-        return self._build_cgi(
-            module="music.sociality.KolWorksTag",
-            method="SongProducer",
-            param=param,
-            response_model=GetProducerResponse,
-        )
+        return CgiRequestData(param=param)
 
-    def get_sheet(self, mid: str, ttype: int = 0):
+    @cgi_endpoint(
+        key="song.get_sheet",
+        module="music.mir.SheetMusicSvr",
+        method="GetMoreSheetMusic",
+        response_model=GetSheetResponse,
+    )
+    def get_sheet(self, mid: str, ttype: int = 0) -> CgiRequestData:
         """获取歌曲相关曲谱.
 
         Args:
@@ -450,11 +511,9 @@ class SongApi(ApiModule):
             ttype: 曲谱来源类型. 0=用户上传, 1=引擎/AI曲谱, 2=虫虫钢琴.
         """
         if ttype == 2:
-            return self._build_cgi(
-                module="music.mir.SheetMusicSvr",
-                method="GetChongChongSheetMusic",
+            return CgiRequestData(
+                meta=CHONGCHONG_SHEET_META,
                 param={"songMid": mid, "begin": 0, "end": 100, "scoreType": -1, "ttype": 1},
-                response_model=GetSheetResponse,
                 comm={
                     "g_tk": 5381,
                     "uin": "",
@@ -465,17 +524,12 @@ class SongApi(ApiModule):
                     "platform": "h5",
                     "needNewCode": 1,
                 },
-                sign=True,
                 override_comm=True,
-                allow_error_codes={10007},
-                parse_on_allow=True,
             )
         score_type = -473 if ttype == 1 else -1
-        return self._build_cgi(
-            module="music.mir.SheetMusicSvr",
-            method="GetMoreSheetMusic",
+        return CgiRequestData(
+            meta=DEFAULT_SHEET_META,
             param={"songMid": mid, "begin": 0, "end": 100, "scoreType": score_type, "ttype": ttype},
-            response_model=GetSheetResponse,
             comm={
                 "g_tk": 5381,
                 "uin": "",
@@ -486,21 +540,22 @@ class SongApi(ApiModule):
                 "needNewCode": 1,
             },
             override_comm=True,
-            allow_error_codes={10007},
-            parse_on_allow=True,
         )
 
-    def has_sheet(self, mid: str):
+    @cgi_endpoint(
+        key="song.has_sheet",
+        module="music.mir.SheetMusicSvr",
+        method="HasSheetMusic",
+        response_model=HasSheetMusicResponse,
+    )
+    def has_sheet(self, mid: str) -> CgiRequestData:
         """检查歌曲是否有曲谱.
 
         Args:
             mid: 歌曲 MID.
         """
-        return self._build_cgi(
-            module="music.mir.SheetMusicSvr",
-            method="HasSheetMusic",
+        return CgiRequestData(
             param={"songMid": mid},
-            response_model=HasSheetMusicResponse,
             comm={
                 "g_tk": 5381,
                 "uin": "",
@@ -513,15 +568,18 @@ class SongApi(ApiModule):
             override_comm=True,
         )
 
-    def get_fav_num(self, song_ids: list[int]):
+    @cgi_endpoint(
+        key="song.get_fav_num",
+        module="music.musicasset.SongFavRead",
+        method="GetSongFansNumberById",
+        response_model=GetFavNumResponse,
+    )
+    def get_fav_num(self, song_ids: list[int]) -> CgiRequestData:
         """获取歌曲收藏数量原始数据.
 
         Args:
             song_ids: 歌曲 ID 列表.
         """
-        return self._build_cgi(
-            module="music.musicasset.SongFavRead",
-            method="GetSongFansNumberById",
+        return CgiRequestData(
             param={"v_songId": song_ids},
-            response_model=GetFavNumResponse,
         )

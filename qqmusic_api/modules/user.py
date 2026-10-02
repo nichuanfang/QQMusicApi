@@ -2,14 +2,20 @@
 
 from typing import Any, ClassVar
 
+from ..core.endpoint import CgiRequestData, cgi_endpoint
 from ..core.pagination import MultiFieldContinuationStrategy, OffsetStrategy, PageStrategy
+from ..models.base import Song
 from ..models.request import Credential
 from ..models.songlist import GetSonglistDetailResponse
 from ..models.user import (
     DislikeListData,
+    FriendEntry,
+    RelationUser,
     UserCreatedSonglistResponse,
+    UserFavAlbumItem,
     UserFavAlbumResponse,
     UserFavMvResponse,
+    UserFavSonglistItem,
     UserFavSonglistResponse,
     UserFriendListResponse,
     UserHomepageResponse,
@@ -37,12 +43,18 @@ class UserApi(ApiModule):
         """在缺省凭证时自动补一个占位凭证."""
         if credential is not None:
             return credential
-        current = self._client.credential
+        current = self._executor.credential
         if current.musicid and current.musickey:
             return current
         return self.PLACEHOLDER_CREDENTIAL
 
-    def get_homepage(self, euin: str, *, credential: Credential | None = None):
+    @cgi_endpoint(
+        key="user.get_homepage",
+        module="music.UnifiedHomepage.UnifiedHomepageSrv",
+        method="GetHomepageHeader",
+        response_model=UserHomepageResponse,
+    )
+    def get_homepage(self, euin: str, *, credential: Credential | None = None) -> CgiRequestData:
         """获取用户主页头部及统计信息.
 
         Args:
@@ -51,29 +63,34 @@ class UserApi(ApiModule):
                 若客户端凭证不可用则自动使用占位凭证.
         """
         target_credential = self._resolve_placeholder_credential(credential)
-        return self._build_cgi(
-            module="music.UnifiedHomepage.UnifiedHomepageSrv",
-            method="GetHomepageHeader",
+        return CgiRequestData(
             param={"uin": euin, "IsQueryTabDetail": 1},
             credential=target_credential,
-            response_model=UserHomepageResponse,
         )
 
-    def get_vip_info(self, *, credential: Credential | None = None):
+    @cgi_endpoint(
+        key="user.get_vip_info",
+        module="VipLogin.VipLoginInter",
+        method="vip_login_base",
+        response_model=UserVipInfoResponse,
+        require_login=True,
+    )
+    def get_vip_info(self, *, credential: Credential | None = None) -> CgiRequestData:
         """获取当前登录账号的 VIP 会员信息.
 
         Args:
             credential: 登录凭证.
         """
-        return self._build_cgi(
-            module="VipLogin.VipLoginInter",
-            method="vip_login_base",
-            param={},
-            credential=credential,
-            require_login=True,
-            response_model=UserVipInfoResponse,
-        )
+        return CgiRequestData(credential=credential)
 
+    @cgi_endpoint(
+        key="user.get_follow_singers",
+        module="music.concern.RelationList",
+        method="GetFollowSingerList",
+        response_model=UserRelationListResponse,
+        require_login=True,
+        item_type=RelationUser,
+    )
     def get_follow_singers(
         self,
         euin: str,
@@ -81,7 +98,7 @@ class UserApi(ApiModule):
         num: int = 10,
         *,
         credential: Credential | None = None,
-    ):
+    ) -> CgiRequestData:
         """获取用户关注的歌手列表.
 
         Args:
@@ -90,13 +107,9 @@ class UserApi(ApiModule):
             num: 每页返回数量.
             credential: 登录凭证.
         """
-        return self._build_cgi(
-            module="music.concern.RelationList",
-            method="GetFollowSingerList",
+        return CgiRequestData(
             param={"HostUin": euin, "From": (page - 1) * num, "Size": num},
             credential=credential,
-            require_login=True,
-            response_model=UserRelationListResponse,
             pager_strategy=OffsetStrategy[UserRelationListResponse](
                 offset_key="From",
                 page_size_key="Size",
@@ -104,8 +117,17 @@ class UserApi(ApiModule):
                 total_extractor=lambda r: r.total,
                 count_extractor=lambda r: len(r.users),
             ),
-        ).with_extractor(lambda r: r.users)
+            items_extractor=lambda r: r.users,
+        )
 
+    @cgi_endpoint(
+        key="user.get_fans",
+        module="music.concern.RelationList",
+        method="GetFansList",
+        response_model=UserRelationListResponse,
+        require_login=True,
+        item_type=RelationUser,
+    )
     def get_fans(
         self,
         euin: str,
@@ -113,7 +135,7 @@ class UserApi(ApiModule):
         num: int = 10,
         *,
         credential: Credential | None = None,
-    ):
+    ) -> CgiRequestData:
         """获取用户粉丝列表.
 
         Args:
@@ -122,13 +144,9 @@ class UserApi(ApiModule):
             num: 每页返回数量.
             credential: 登录凭证.
         """
-        return self._build_cgi(
-            module="music.concern.RelationList",
-            method="GetFansList",
+        return CgiRequestData(
             param={"HostUin": euin, "From": (page - 1) * num, "Size": num},
             credential=credential,
-            require_login=True,
-            response_model=UserRelationListResponse,
             pager_strategy=OffsetStrategy[UserRelationListResponse](
                 offset_key="From",
                 page_size_key="Size",
@@ -136,15 +154,24 @@ class UserApi(ApiModule):
                 total_extractor=lambda r: r.total,
                 count_extractor=lambda r: len(r.users),
             ),
-        ).with_extractor(lambda r: r.users)
+            items_extractor=lambda r: r.users,
+        )
 
+    @cgi_endpoint(
+        key="user.get_friend",
+        module="music.homepage.Friendship",
+        method="GetFriendList",
+        response_model=UserFriendListResponse,
+        require_login=True,
+        item_type=FriendEntry,
+    )
     def get_friend(
         self,
         page: int = 1,
         num: int = 10,
         *,
         credential: Credential | None = None,
-    ):
+    ) -> CgiRequestData:
         """获取好友列表.
 
         Args:
@@ -152,21 +179,26 @@ class UserApi(ApiModule):
             num: 每页返回数量.
             credential: 登录凭证.
         """
-        return self._build_cgi(
-            module="music.homepage.Friendship",
-            method="GetFriendList",
+        return CgiRequestData(
             param={"PageSize": num, "Page": page - 1},
             credential=credential,
-            require_login=True,
-            response_model=UserFriendListResponse,
             pager_strategy=PageStrategy[UserFriendListResponse](
                 page_key="Page",
                 page_size=num,
                 start_page=page - 1,
                 has_more_extractor=lambda r: r.has_more,
             ),
-        ).with_extractor(lambda r: r.friends)
+            items_extractor=lambda r: r.friends,
+        )
 
+    @cgi_endpoint(
+        key="user.get_follow_user",
+        module="music.concern.RelationList",
+        method="GetFollowUserList",
+        response_model=UserRelationListResponse,
+        require_login=True,
+        item_type=RelationUser,
+    )
     def get_follow_user(
         self,
         euin: str,
@@ -174,7 +206,7 @@ class UserApi(ApiModule):
         num: int = 10,
         *,
         credential: Credential | None = None,
-    ):
+    ) -> CgiRequestData:
         """获取关注的用户列表.
 
         Args:
@@ -183,13 +215,9 @@ class UserApi(ApiModule):
             num: 每页返回数量.
             credential: 登录凭证.
         """
-        return self._build_cgi(
-            module="music.concern.RelationList",
-            method="GetFollowUserList",
+        return CgiRequestData(
             param={"HostUin": euin, "From": (page - 1) * num, "Size": num},
             credential=credential,
-            require_login=True,
-            response_model=UserRelationListResponse,
             pager_strategy=OffsetStrategy[UserRelationListResponse](
                 offset_key="From",
                 page_size_key="Size",
@@ -197,23 +225,39 @@ class UserApi(ApiModule):
                 total_extractor=lambda r: r.total,
                 count_extractor=lambda r: len(r.users),
             ),
-        ).with_extractor(lambda r: r.users)
+            items_extractor=lambda r: r.users,
+        )
 
-    def get_created_songlist(self, uin: int, *, credential: Credential | None = None):
+    @cgi_endpoint(
+        key="user.get_created_songlist",
+        module="music.musicasset.PlaylistBaseRead",
+        method="GetPlaylistByUin",
+        response_model=UserCreatedSonglistResponse,
+    )
+    def get_created_songlist(
+        self,
+        uin: int,
+        *,
+        credential: Credential | None = None,
+    ) -> CgiRequestData:
         """获取用户创建的歌单列表.
 
         Args:
             uin: 用户 UIN.
             credential: 登录凭证.
         """
-        return self._build_cgi(
-            module="music.musicasset.PlaylistBaseRead",
-            method="GetPlaylistByUin",
+        return CgiRequestData(
             param={"uin": str(uin)},
             credential=credential,
-            response_model=UserCreatedSonglistResponse,
         )
 
+    @cgi_endpoint(
+        key="user.get_fav_song",
+        module="music.srfDissInfo.DissInfo",
+        method="CgiGetDiss",
+        response_model=GetSonglistDetailResponse,
+        item_type=Song,
+    )
     def get_fav_song(
         self,
         euin: str,
@@ -221,7 +265,7 @@ class UserApi(ApiModule):
         num: int = 10,
         *,
         credential: Credential | None = None,
-    ):
+    ) -> CgiRequestData:
         """获取用户收藏的歌曲列表 (默认 dirid 为 201).
 
         Args:
@@ -230,9 +274,7 @@ class UserApi(ApiModule):
             num: 返回数量.
             credential: 登录凭证.
         """
-        return self._build_cgi(
-            module="music.srfDissInfo.DissInfo",
-            method="CgiGetDiss",
+        return CgiRequestData(
             param={
                 "disstid": 0,
                 "dirid": 201,
@@ -244,7 +286,6 @@ class UserApi(ApiModule):
                 "enc_host_uin": euin,
             },
             credential=credential,
-            response_model=GetSonglistDetailResponse,
             pager_strategy=OffsetStrategy[GetSonglistDetailResponse](
                 offset_key="song_begin",
                 page_size_key="song_num",
@@ -252,8 +293,16 @@ class UserApi(ApiModule):
                 total_extractor=lambda r: r.total,
                 count_extractor=lambda response: len(response.songs),
             ),
-        ).with_extractor(lambda r: r.songs)
+            items_extractor=lambda r: r.songs,
+        )
 
+    @cgi_endpoint(
+        key="user.get_fav_songlist",
+        module="music.musicasset.PlaylistFavRead",
+        method="CgiGetPlaylistFavInfo",
+        response_model=UserFavSonglistResponse,
+        item_type=UserFavSonglistItem,
+    )
     def get_fav_songlist(
         self,
         euin: str,
@@ -261,7 +310,7 @@ class UserApi(ApiModule):
         num: int = 10,
         *,
         credential: Credential | None = None,
-    ):
+    ) -> CgiRequestData:
         """获取用户收藏的外部歌单列表.
 
         Args:
@@ -270,12 +319,9 @@ class UserApi(ApiModule):
             num: 每页数量.
             credential: 登录凭证.
         """
-        return self._build_cgi(
-            module="music.musicasset.PlaylistFavRead",
-            method="CgiGetPlaylistFavInfo",
+        return CgiRequestData(
             param={"uin": euin, "offset": (page - 1) * num, "size": num},
             credential=credential,
-            response_model=UserFavSonglistResponse,
             pager_strategy=OffsetStrategy[UserFavSonglistResponse](
                 offset_key="offset",
                 page_size_key="size",
@@ -283,7 +329,8 @@ class UserApi(ApiModule):
                 total_extractor=lambda r: r.total,
                 count_extractor=lambda r: len(r.playlists),
             ),
-        ).with_extractor(lambda r: r.playlists)
+            items_extractor=lambda r: r.playlists,
+        )
 
     async def fav_songlist(self, songlist_id: int, *, credential: Credential | None = None) -> bool:
         """收藏歌单 (将他人的公开歌单加入当前账号的收藏).
@@ -298,7 +345,7 @@ class UserApi(ApiModule):
         data = await self._build_cgi(
             module="music.musicasset.PlaylistFavWrite",
             method="FavPlaylist",
-            param={"uin": (credential or self._client.credential).encrypt_uin, "v_playlistId": [songlist_id]},
+            param={"uin": (credential or self._executor.credential).encrypt_uin, "v_playlistId": [songlist_id]},
             credential=credential,
             require_login=True,
         )
@@ -317,12 +364,19 @@ class UserApi(ApiModule):
         data = await self._build_cgi(
             module="music.musicasset.PlaylistFavWrite",
             method="CancelFavPlaylist",
-            param={"uin": (credential or self._client.credential).encrypt_uin, "v_playlistId": [songlist_id]},
+            param={"uin": (credential or self._executor.credential).encrypt_uin, "v_playlistId": [songlist_id]},
             credential=credential,
             require_login=True,
         )
         return data.get("result") == 0 and songlist_id not in (data.get("v_failedPlaylistId") or [])
 
+    @cgi_endpoint(
+        key="user.get_fav_album",
+        module="music.musicasset.AlbumFavRead",
+        method="CgiGetAlbumFavInfo",
+        response_model=UserFavAlbumResponse,
+        item_type=UserFavAlbumItem,
+    )
     def get_fav_album(
         self,
         euin: str,
@@ -330,7 +384,7 @@ class UserApi(ApiModule):
         num: int = 10,
         *,
         credential: Credential | None = None,
-    ):
+    ) -> CgiRequestData:
         """获取用户收藏的专辑列表.
 
         Args:
@@ -339,12 +393,9 @@ class UserApi(ApiModule):
             num: 每页数量.
             credential: 登录凭证.
         """
-        return self._build_cgi(
-            module="music.musicasset.AlbumFavRead",
-            method="CgiGetAlbumFavInfo",
+        return CgiRequestData(
             param={"euin": euin, "offset": (page - 1) * num, "size": num},
             credential=credential,
-            response_model=UserFavAlbumResponse,
             pager_strategy=OffsetStrategy[UserFavAlbumResponse](
                 offset_key="offset",
                 page_size_key="size",
@@ -352,8 +403,16 @@ class UserApi(ApiModule):
                 total_extractor=lambda r: r.total,
                 count_extractor=lambda r: len(r.albums),
             ),
-        ).with_extractor(lambda r: r.albums)
+            items_extractor=lambda r: r.albums,
+        )
 
+    @cgi_endpoint(
+        key="user.get_fav_mv",
+        module="music.musicasset.MVFavRead",
+        method="getMyFavMV_v2",
+        response_model=UserFavMvResponse,
+        require_login=True,
+    )
     def get_fav_mv(
         self,
         euin: str,
@@ -361,7 +420,7 @@ class UserApi(ApiModule):
         num: int = 10,
         *,
         credential: Credential | None = None,
-    ):
+    ) -> CgiRequestData:
         """获取用户收藏的 MV 列表.
 
         Args:
@@ -370,30 +429,38 @@ class UserApi(ApiModule):
             num: 每页数量.
             credential: 登录凭证.
         """
-        return self._build_cgi(
-            module="music.musicasset.MVFavRead",
-            method="getMyFavMV_v2",
+        return CgiRequestData(
             param={"encuin": euin, "pagesize": num, "num": page - 1},
             credential=credential,
-            require_login=True,
-            response_model=UserFavMvResponse,
         )
 
-    def get_music_gene(self, euin: str, *, credential: Credential | None = None):
+    @cgi_endpoint(
+        key="user.get_music_gene",
+        module="music.recommend.UserProfileSettingSvr",
+        method="GetProfileReport",
+        response_model=UserMusicGeneResponse,
+    )
+    def get_music_gene(self, euin: str, *, credential: Credential | None = None) -> CgiRequestData:
         """获取用户的音乐基因数据.
 
         Args:
             euin: 加密后的 UIN.
             credential: 登录凭证.
         """
-        return self._build_cgi(
-            module="music.recommend.UserProfileSettingSvr",
-            method="GetProfileReport",
+        return CgiRequestData(
             param={"VisitAccount": euin},
             credential=credential,
-            response_model=UserMusicGeneResponse,
         )
 
+    @cgi_endpoint(
+        key="user.get_dislike_list",
+        module="music.feedback.FeedbackBlack",
+        method="GetDislikeList",
+        response_model=DislikeListData,
+        sign=True,
+        require_login=True,
+        pager=True,
+    )
     def get_dislike_list(
         self,
         cmd: int = 3,
@@ -401,7 +468,7 @@ class UserApi(ApiModule):
         lastid: int = 0,
         *,
         credential: Credential | None = None,
-    ):
+    ) -> CgiRequestData:
         """获取用户不喜欢列表.
 
         Args:
@@ -428,14 +495,9 @@ class UserApi(ApiModule):
                 next_p["StyleLastid"] = r.styles[-1].id
             return next_p
 
-        return self._build_cgi(
-            module="music.feedback.FeedbackBlack",
-            method="GetDislikeList",
+        return CgiRequestData(
             param=param,
             credential=credential,
-            require_login=True,
-            response_model=DislikeListData,
-            sign=True,
             pager_strategy=MultiFieldContinuationStrategy[DislikeListData](
                 build_next_params=_build_next_params,
             ),

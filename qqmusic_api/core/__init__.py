@@ -1,6 +1,17 @@
 """core 模块."""
 
 from .client import Client
+from .endpoint import (
+    CgiEndpointMeta,
+    CgiRequestData,
+    EndpointMeta,
+    HttpEndpointMeta,
+    HttpRequestData,
+    cgi_endpoint,
+    get_endpoint_meta,
+    http_endpoint,
+)
+from .engine import RequestCall, RequestEngine, RequestScope
 from .exceptions import (
     ApiDataError,
     ApiException,
@@ -18,8 +29,11 @@ from .exceptions import (
     LoginRateLimitError,
     NetworkError,
     RatelimitedError,
+    TimeoutNetworkError,
 )
 from .request import BaseRequest, CgiRequest, HttpRequest, ItemPaginatedCgiRequest, PaginatedCgiRequest
+from .response import RawPayload
+from .transport import RawStream, StreamingTransport
 from .versioning import DEFAULT_VERSION_POLICY, Platform, VersionPolicy, VersionProfile
 
 __all__ = [
@@ -29,14 +43,19 @@ __all__ = [
     "BaseApiException",
     "BaseRequest",
     "CgiApiException",
+    "CgiEndpointMeta",
     "CgiRequest",
+    "CgiRequestData",
     "Client",
     "CredentialExpiredError",
     "CredentialInvalidError",
     "CredentialRefreshError",
+    "EndpointMeta",
     "GlobalApiError",
     "HTTPError",
+    "HttpEndpointMeta",
     "HttpRequest",
+    "HttpRequestData",
     "ItemPaginatedCgiRequest",
     "LoginAccountRestrictedError",
     "LoginAuthExpiredError",
@@ -47,6 +66,16 @@ __all__ = [
     "PaginatedCgiRequest",
     "Platform",
     "RatelimitedError",
+    "RawPayload",
+    "RawStream",
+    "RequestCall",
+    "RequestEngine",
+    "RequestScope",
+    "StreamingTransport",
+    "TimeoutNetworkError",
     "VersionPolicy",
     "VersionProfile",
+    "cgi_endpoint",
+    "get_endpoint_meta",
+    "http_endpoint",
 ]
