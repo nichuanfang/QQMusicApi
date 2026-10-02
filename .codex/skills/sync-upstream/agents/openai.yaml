@@ -1,0 +1,6 @@
+interface:
+  display_name: "Sync Upstream"
+  short_description: "同步 QQMusicApi 上游并验证合并"
+
+policy:
+  allow_implicit_invocation: false
