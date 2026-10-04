@@ -74,20 +74,38 @@ def credential_from_cookies(request: Request) -> Credential:
     unionid = cookies.get("unionid")
     str_musicid = cookies.get("str_musicid")
     refresh_key = cookies.get("refresh_key")
+    login_type = cookies.get("login_type") or cookies.get("loginType")
     if musicid and musickey:
-        return Credential(
-            musicid=_parse_cookie_int(musicid),
-            musickey=musickey,
-            openid=openid or "",
-            refresh_token=refresh_token or "",
-            access_token=access_token or "",
-            expired_at=_parse_cookie_int(expired_at) if expired_at else 0,
-            unionid=unionid or "",
-            str_musicid=str_musicid or musicid,
-            refresh_key=refresh_key or "",
-        )
+        credential_values = {
+            "musicid": _parse_cookie_int(musicid),
+            "musickey": musickey,
+            "openid": openid or "",
+            "refresh_token": refresh_token or "",
+            "access_token": access_token or "",
+            "expired_at": _parse_cookie_int(expired_at) if expired_at else 0,
+            "unionid": unionid or "",
+            "str_musicid": str_musicid or musicid,
+            "refresh_key": refresh_key or "",
+        }
+        if login_type is not None:
+            # Preserve an explicit type (especially QQ=0). Inferring from the
+            # key prefix is ambiguous for QQ and mobile credentials and can
+            # make refresh_credential use the wrong upstream login branch.
+            credential_values["login_type"] = _parse_cookie_int(login_type)
+        return Credential(**credential_values)
 
-    values = (openid, refresh_token, access_token, expired_at, unionid, str_musicid, refresh_key, musicid, musickey)
+    values = (
+        openid,
+        refresh_token,
+        access_token,
+        expired_at,
+        unionid,
+        str_musicid,
+        refresh_key,
+        login_type,
+        musicid,
+        musickey,
+    )
     if any(value is not None for value in values) and not (musicid and musickey):
         raise HTTPException(status_code=422, detail="Cookie musicid 与 musickey 必须同时提供")
 
