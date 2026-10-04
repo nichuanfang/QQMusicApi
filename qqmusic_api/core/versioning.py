@@ -1,5 +1,6 @@
 """请求版本策略中心."""
 
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -30,7 +31,7 @@ class VersionProfile:
     v: int | None = None
     platform: str | None = None
     ua_version: int | None = None
-    qimei_app_version: str = "14.9.0.8"
+    qimei_app_version: str = "20.9.0.8"
     qimei_sdk_version: str = "1.2.13.6"
 
 
@@ -88,6 +89,7 @@ class VersionPolicy:
         if platform == Platform.ANDROID:
             session_uid = getattr(session, "uid", None)
             session_sid = getattr(session, "sid", None)
+            uid_part = str(credential.musicid) if credential.musicid else guid
             params = CommonParams(
                 ct=profile.ct,
                 cv=profile.cv,
@@ -97,6 +99,7 @@ class VersionPolicy:
                 authst=credential.musickey or None,
                 tmeAppID="qqmusic",
                 tmeLoginType=credential.login_type or None,
+                traceid=f"10002_{uid_part}_{int(time.time())}",
                 QIMEI36=qimei["q36"] if qimei is not None else "",
                 OpenUDID=guid,
                 udid=guid,
@@ -175,10 +178,10 @@ class VersionPolicy:
 DEFAULT_VERSION_POLICY = VersionPolicy(
     android=VersionProfile(
         ct=11,
-        cv=14090008,
-        v=14090008,
-        ua_version=14090008,
-        qimei_app_version="14.9.0.8",
+        cv=20_090_008,
+        v=20_090_008,
+        ua_version=20_090_008,
+        qimei_app_version="20.9.0.8",
         qimei_sdk_version="1.2.13.6",
     ),
     desktop=VersionProfile(
