@@ -35,9 +35,7 @@ def test_credential_from_cookies_preserves_explicit_qq_login_type_zero() -> None
 
 def test_credential_from_cookies_preserves_explicit_wechat_login_type() -> None:
     """兼容驼峰 Cookie, 保留微信登录类型."""
-    credential = credential_from_cookies(
-        _request_with_cookie("musicid=123456; musickey=key; loginType=1")
-    )
+    credential = credential_from_cookies(_request_with_cookie("musicid=123456; musickey=key; loginType=1"))
 
     assert credential.login_type == 1
 

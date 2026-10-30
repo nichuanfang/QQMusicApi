@@ -1,9 +1,9 @@
 """歌手相关 API."""
 
 from enum import Enum, IntEnum
-from typing import cast
+from typing import Any, Literal, TypedDict, cast, overload
 
-from ..core import Platform
+from ..core import PaginatedCgiRequest, Platform
 from ..core.endpoint import CgiRequestData, cgi_endpoint
 from ..core.pagination import (
     MultiFieldContinuationStrategy,
@@ -21,6 +21,7 @@ from ..models.singer import (
     SingerDetailResponse,
     SingerIndexPageResponse,
     SingerMvListResponse,
+    SingerMvTagResponse,
     SingerSongListResponse,
     SingerTypeListResponse,
     VideoBrief,
@@ -91,6 +92,30 @@ class TabType(Enum):
         self.tab_name = tab_name
 
 
+class OrderType(IntEnum):
+    """歌手主页条目排序类型.
+
+    + LATEST: 最新 / 按时间排序 (0)
+    + HOT: 最热 / 按热度排序 (1)
+    """
+
+    LATEST = 0
+    HOT = 1
+
+
+class AlbumFilterType(IntEnum):
+    """专辑分类筛选类型.
+
+    + STUDIO: 录音室专辑 (0)
+    + LIVE: 现场专辑 (1)
+    + EP: EP (11)
+    """
+
+    STUDIO = 0
+    LIVE = 1
+    EP = 11
+
+
 class IndexType(IntEnum):
     """首字母索引枚举."""
 
@@ -122,6 +147,30 @@ class IndexType(IntEnum):
     Z = 26
     ALL = -100
     HASH = 27
+
+
+class AlbumExtension(TypedDict):
+    """专辑 Tab 扩展参数.
+
+    Attributes:
+        IsNeedFilterType: 是否下发分类筛选列表.
+        FilterType: 分类筛选值.
+    """
+
+    IsNeedFilterType: int
+    FilterType: int
+
+
+class VideoExtension(TypedDict):
+    """视频 Tab 扩展参数.
+
+    Attributes:
+        TagID: 视频标签筛选值.
+        IsNeedTagList: 是否下发标签列表.
+    """
+
+    TagID: int
+    IsNeedTagList: int
 
 
 class SingerApi(ApiModule):
@@ -224,6 +273,38 @@ class SingerApi(ApiModule):
             param={"SingerMid": mid},
         )
 
+    @overload
+    def get_tab_detail(
+        self,
+        mid: str,
+        tab_type: Literal[TabType.VIDEO],
+        page: int = 1,
+        num: int = 10,
+        order: OrderType | int = OrderType.LATEST,
+        extension: VideoExtension | None = None,
+    ) -> PaginatedCgiRequest[HomepageTabDetailResponse]: ...
+
+    @overload
+    def get_tab_detail(
+        self,
+        mid: str,
+        tab_type: Literal[TabType.ALBUM],
+        page: int = 1,
+        num: int = 10,
+        order: OrderType | int = OrderType.LATEST,
+        extension: AlbumExtension | None = None,
+    ) -> PaginatedCgiRequest[HomepageTabDetailResponse]: ...
+
+    @overload
+    def get_tab_detail(
+        self,
+        mid: str,
+        tab_type: TabType,
+        page: int = 1,
+        num: int = 10,
+        order: OrderType | int = OrderType.LATEST,
+    ) -> PaginatedCgiRequest[HomepageTabDetailResponse]: ...
+
     @cgi_endpoint(
         key="singer.get_tab_detail",
         module="music.UnifiedHomepage.UnifiedHomepageSrv",
@@ -237,6 +318,8 @@ class SingerApi(ApiModule):
         tab_type: TabType,
         page: int = 1,
         num: int = 10,
+        order: OrderType | int = OrderType.LATEST,
+        extension: VideoExtension | AlbumExtension | None = None,
     ) -> CgiRequestData:
         """获取歌手主页特定 Tab 的详情原始数据.
 
@@ -245,16 +328,21 @@ class SingerApi(ApiModule):
             tab_type: Tab 类型.
             page: 页码.
             num: 返回数量.
+            order: 排序方式 (最新 / 最热).
+            extension: Tab 请求扩展参数.
         """
+        param: dict[str, Any] = {
+            "SingerMid": mid,
+            "IsQueryTabDetail": 1,
+            "TabID": tab_type.tab_id,
+            "PageNum": page - 1,
+            "PageSize": num,
+            "Order": int(order),
+        }
+        if extension:
+            param[tab_type.value[1].replace("Tab", "") + "Extension"] = extension
         return CgiRequestData(
-            param={
-                "SingerMid": mid,
-                "IsQueryTabDetail": 1,
-                "TabID": tab_type.tab_id,
-                "PageNum": page - 1,
-                "PageSize": num,
-                "Order": 0,
-            },
+            param=param,
             pager_strategy=PageStrategy[HomepageTabDetailResponse](
                 page_key="PageNum",
                 page_size=num,
@@ -324,16 +412,23 @@ class SingerApi(ApiModule):
         response_model=SingerSongListResponse,
         item_type=Song,
     )
-    def get_songs_list(self, mid: str, num: int = 10, page: int = 1) -> CgiRequestData:
+    def get_songs_list(
+        self,
+        mid: str,
+        num: int = 10,
+        page: int = 1,
+        order: OrderType | int = OrderType.HOT,
+    ) -> CgiRequestData:
         """获取歌手的歌曲列表.
 
         Args:
             mid: 歌手 MID.
             num: 返回歌曲数量.
             page: 分页页码.
+            order: 排序方式.
         """
         return CgiRequestData(
-            param={"singerMid": mid, "order": 1, "number": num, "begin": (page - 1) * num},
+            param={"singerMid": mid, "order": int(order), "number": num, "begin": (page - 1) * num},
             pager_strategy=OffsetStrategy[SingerSongListResponse](
                 offset_key="begin",
                 page_size_key="number",
@@ -350,16 +445,28 @@ class SingerApi(ApiModule):
         response_model=SingerAlbumListResponse,
         item_type=AlbumBrief,
     )
-    def get_album_list(self, mid: str, num: int = 10, page: int = 1) -> CgiRequestData:
+    def get_album_list(
+        self,
+        mid: str,
+        num: int = 10,
+        page: int = 1,
+        order: OrderType | int = OrderType.HOT,
+        filter_type: AlbumFilterType | int | None = None,
+    ) -> CgiRequestData:
         """获取歌手的专辑列表.
 
         Args:
             mid: 歌手 MID.
             num: 返回专辑数量.
             page: 分页页码.
+            order: 排序方式.
+            filter_type: 专辑分类筛选 (types, 值域见 AlbumFilterType).
         """
+        param: dict[str, Any] = {"singerMid": mid, "order": int(order), "number": num, "begin": (page - 1) * num}
+        if filter_type is not None:
+            param["types"] = [int(filter_type)]
         return CgiRequestData(
-            param={"singerMid": mid, "order": 1, "number": num, "begin": (page - 1) * num},
+            param=param,
             pager_strategy=OffsetStrategy[SingerAlbumListResponse](
                 offset_key="begin",
                 page_size_key="number",
@@ -370,22 +477,48 @@ class SingerApi(ApiModule):
         )
 
     @cgi_endpoint(
+        key="singer.get_mv_tag",
+        module="MvService.MvInfoProServer",
+        method="GetSingerMvTag",
+        response_model=SingerMvTagResponse,
+    )
+    def get_mv_tag(self, mid: str) -> CgiRequestData:
+        """获取歌手 MV 分类标签列表.
+
+        Args:
+            mid: 歌手 MID.
+        """
+        return CgiRequestData(param={"singermid": mid})
+
+    @cgi_endpoint(
         key="singer.get_mv_list",
         module="MvService.MvInfoProServer",
         method="GetSingerMvList",
         response_model=SingerMvListResponse,
         item_type=VideoBrief,
     )
-    def get_mv_list(self, mid: str, num: int = 10, page: int = 1) -> CgiRequestData:
+    def get_mv_list(
+        self,
+        mid: str,
+        num: int = 10,
+        page: int = 1,
+        order: OrderType | int = OrderType.HOT,
+        tag_id: int | None = None,
+    ) -> CgiRequestData:
         """获取歌手 MV 列表数据.
 
         Args:
             mid: 歌手 MID.
             num: 返回数量.
             page: 分页页码.
+            order: 排序方式.
+            tag_id: MV 分类筛选.
         """
+        param: dict[str, Any] = {"singermid": mid, "order": int(order), "count": num, "start": (page - 1) * num}
+        if tag_id is not None:
+            param["tagid"] = tag_id
         return CgiRequestData(
-            param={"singermid": mid, "order": 1, "count": num, "start": (page - 1) * num},
+            param=param,
             pager_strategy=OffsetStrategy[SingerMvListResponse](
                 offset_key="start",
                 page_size_key="count",

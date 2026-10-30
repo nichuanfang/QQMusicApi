@@ -10,8 +10,8 @@ import dataclasses
 import inspect
 import re
 from collections.abc import Callable
-from enum import Enum, IntEnum
-from typing import Annotated, Any, cast, get_args, get_origin
+from enum import IntEnum
+from typing import Annotated, Any, get_args, get_origin
 
 from fastapi import Depends, FastAPI, Path, Query, Request
 from pydantic import BaseModel
@@ -70,7 +70,7 @@ def include_routes(app: FastAPI, routes: tuple[WebRoute, ...]) -> None:
             route.path,
             endpoint,
             methods=[method.value for method in route.methods],
-            tags=cast("list[Enum | str]", list(route.tags or (route.module,))),
+            tags=[route.module],
             summary=summary,
             description=description,
             response_model=ApiResponse[actual_response_model],
@@ -201,16 +201,21 @@ def _build_endpoint_signature(
     expose_credential: bool,
 ) -> inspect.Signature:
     params = [inspect.Parameter("request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request)]
+    path_param_annotations = []
+    for param in path_params:
+        annotation = external_param_annotation(param)
+        annotation = Annotated[
+            annotation,
+            Path(description=param.description or param_docs.get(param.name) or param.name),
+        ]
+        path_param_annotations.append(annotation)
     params.extend(
         inspect.Parameter(
             param.alias or param.name,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            annotation=Annotated[
-                external_param_annotation(param),
-                Path(description=param.description or param_docs.get(param.name) or param.name),
-            ],
+            annotation=annotation,
         )
-        for param in path_params
+        for param, annotation in zip(path_params, path_param_annotations, strict=True)
     )
     if not is_empty_model(query_model):
         params.append(
@@ -269,8 +274,6 @@ def _validate_route(route: WebRoute, path_methods: set[tuple[str, str]]) -> list
     if route.cache is not None:
         if route.cache.ttl <= 0:
             errors.append(f"缓存 ttl 必须大于 0: {key}")
-        if route.cache.scope != "public":
-            errors.append(f"ttl 缓存路由必须声明 public scope: {key}")
         if route.auth is not AuthPolicy.NONE:
             errors.append(f"认证路由不能使用 public 缓存: {key}")
     route_params = _resolve_route_params(route)
