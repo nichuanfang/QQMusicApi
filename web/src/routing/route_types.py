@@ -48,9 +48,14 @@ class AuthPolicy(str, Enum):
 
 @dataclass(frozen=True)
 class CachePolicy:
-    """公开响应缓存策略."""
+    """响应缓存策略.
+
+    vary_by_credential 为真时按登录账号隔离缓存, 供可选登录的读接口使用.
+    公开缓存必须保持为假, 避免不同账号共用同一份结果.
+    """
 
     ttl: int
+    vary_by_credential: bool = False
 
 
 @dataclass(frozen=True)

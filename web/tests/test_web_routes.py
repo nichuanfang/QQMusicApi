@@ -135,7 +135,21 @@ def test_auth_routes_include_cookie_security_requirement(app: FastAPI) -> None:
 
 def test_public_cache_routes_are_not_auth_routes(app: FastAPI) -> None:
     """测试 public 缓存路由不是认证路由."""
-    assert all(route.auth is AuthPolicy.NONE for route in RESOLVED_ROUTES if route.cache is not None)
+    assert all(
+        route.auth is AuthPolicy.NONE
+        for route in RESOLVED_ROUTES
+        if route.cache is not None and not route.cache.vary_by_credential
+    )
+
+
+def test_search_by_type_uses_account_scoped_cache() -> None:
+    """测试歌曲搜索使用可选登录并按账号隔离缓存."""
+    route = next(route for route in RESOLVED_ROUTES if route.path == "/search/search_by_type")
+
+    assert route.auth is AuthPolicy.OPTIONAL
+    assert route.cache is not None
+    assert route.cache.vary_by_credential
+    assert route.cache.ttl == 60
 
 
 def test_representative_route_parameters_are_registered(app: FastAPI) -> None:
@@ -206,6 +220,34 @@ async def _error_response(app: FastAPI, handler_key: type[Exception], exception:
     """调用已注册的异常处理器."""
     handler = cast("Any", app.exception_handlers[handler_key])
     return cast("JSONResponse", await handler(cast("Request", None), exception))
+
+
+@pytest.mark.asyncio
+async def test_ratelimited_response_keeps_upstream_code_and_feedback_url(app: FastAPI) -> None:
+    """测试限流响应保留上游业务码和安全验证链接, 且不建议重试."""
+    response = await _error_response(
+        app,
+        BaseApiException,
+        RatelimitedError(code=2001, data={"feedbackURL": "https://example.test/verify"}),
+    )
+    payload = response.body
+
+    assert response.status_code == 429
+    assert b'"upstream_code":2001' in payload or b'"upstream_code": 2001' in payload
+    assert b"https://example.test/verify" in payload
+    assert response.headers.get("retry-after") is None
+
+
+@pytest.mark.asyncio
+async def test_ratelimited_response_without_feedback_sets_retry_after(app: FastAPI) -> None:
+    """测试没有安全验证链接的限流响应带 Retry-After."""
+    response = await _error_response(app, BaseApiException, RatelimitedError(code=2001))
+    payload = response.body
+
+    assert response.status_code == 429
+    assert response.headers.get("retry-after") == "2"
+    assert b'"upstream_code":2001' in payload or b'"upstream_code": 2001' in payload
+    assert b"feedback_url" not in payload
 
 
 @pytest.mark.asyncio

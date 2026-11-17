@@ -6,13 +6,14 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
 
+import anyio
 from anyio.to_thread import run_sync
 from fastapi import HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 from qqmusic_api import Credential
-from qqmusic_api.core.exceptions import BaseApiException, CredentialExpiredError
+from qqmusic_api.core.exceptions import BaseApiException, CredentialExpiredError, RatelimitedError
 
 from ..core.auth import configured_credential_for_api
 from ..core.cache import (
@@ -27,12 +28,14 @@ from ..core.credential_pool import CredentialPool, PoolCredential, ResolvedCrede
 from ..core.deps import get_cache_config, get_coalescer, get_credential_pool
 from ..core.error_mapping import HTTP_ERROR_MESSAGES, api_exception_status_code, is_upstream_failure
 from ..core.response import ApiResponse, error_response, success_response
-from .route_types import AuthPolicy, RouteContext
+from .route_types import AuthPolicy, HttpMethod, RouteContext, WebRoute
 
 logger = logging.getLogger(__name__)
 
 _VALIDATION_ERROR_TYPES = (KeyError, TypeError, ValueError)
 _DEFAULT_NEGATIVE_CACHE_TTL = 3
+# 只消化没有安全验证链接的短暂限流. 总等待留在调用方超时之内.
+_GET_RATE_LIMIT_RETRY_DELAYS = (2.0, 4.0)
 
 
 @runtime_checkable
@@ -81,10 +84,29 @@ async def execute_route(context: RouteContext) -> Any:
                 await run_sync(pool.invalidate, refreshed)
                 raise
 
-    if cache_ttl is not None:
-        return await _execute_cached_route(context, cache_ttl, invoke_with_retry)
+    async def invoke_read() -> Any:
+        if not _is_idempotent_get(route):
+            return await invoke_with_retry()
+        delays = (0.0, *_GET_RATE_LIMIT_RETRY_DELAYS)
+        for attempt, delay in enumerate(delays):
+            if delay:
+                await anyio.sleep(delay)
+            try:
+                return await invoke_with_retry()
+            except RatelimitedError as exc:
+                if exc.feedback_url or attempt == len(delays) - 1:
+                    raise
+        raise RuntimeError("限流重试流程异常结束")
 
-    return _wrap_success(await invoke_with_retry())
+    if cache_ttl is not None:
+        return await _execute_cached_route(
+            context,
+            cache_ttl,
+            invoke_read,
+            _cache_credential_id(route, resolved_credential),
+        )
+
+    return _wrap_success(await invoke_read())
 
 
 async def _invoke_route(context: RouteContext, params: dict[str, Any], credential: Credential | None) -> Any:
@@ -103,10 +125,25 @@ async def _invoke_route(context: RouteContext, params: dict[str, Any], credentia
     return result
 
 
+def _is_idempotent_get(route: WebRoute) -> bool:
+    """只对单一 GET 路由做限流重试, 避免写请求被执行两次."""
+    return len(route.methods) == 1 and route.methods[0] is HttpMethod.GET
+
+
+def _cache_credential_id(route: WebRoute, resolved: ResolvedCredential | None) -> str:
+    """返回按账号隔离缓存时使用的身份, 公开缓存返回空串."""
+    if route.cache is None or not route.cache.vary_by_credential:
+        return ""
+    credential = resolved.credential if resolved is not None else None
+    musicid = getattr(credential, "musicid", 0) or 0
+    return str(musicid) if musicid else "anonymous"
+
+
 async def _execute_cached_route(
     context: RouteContext,
     cache_ttl: int,
     invoke_with_retry: Callable[[], Awaitable[Any]],
+    credential_id: str = "",
 ) -> Any:
     """执行带缓存的读路由: 缓存未命中时用请求合并保证同一键只回源一次.
 
@@ -114,7 +151,7 @@ async def _execute_cached_route(
         双重检查锁定: 等待者在 leader 结束后重新查缓存, 命中即返回. 等待超时只降级返回
         默认错误, 绝不自行回源, 避免上游故障期间把并发等待者放大成并发风暴.
     """
-    cache_key = make_cache_key(context.route.path, dict(context.params))
+    cache_key = make_cache_key(context.route.path, dict(context.params), credential_id=credential_id)
     hit = await context.cache.get(cache_key)
     if hit is not None:
         logger.debug("缓存命中: %s", context.route.path)

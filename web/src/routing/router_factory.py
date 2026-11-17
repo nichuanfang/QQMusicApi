@@ -274,8 +274,10 @@ def _validate_route(route: WebRoute, path_methods: set[tuple[str, str]]) -> list
     if route.cache is not None:
         if route.cache.ttl <= 0:
             errors.append(f"缓存 ttl 必须大于 0: {key}")
-        if route.auth is not AuthPolicy.NONE:
+        if route.auth is not AuthPolicy.NONE and not route.cache.vary_by_credential:
             errors.append(f"认证路由不能使用 public 缓存: {key}")
+        if route.auth is AuthPolicy.NONE and route.cache.vary_by_credential:
+            errors.append(f"公开路由不能按凭证隔离缓存: {key}")
     route_params = _resolve_route_params(route)
     errors.extend(_validate_path_params(route, route_params))
     errors.extend(_validate_param_sources(route, route_params))

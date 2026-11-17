@@ -1,7 +1,15 @@
 """Web 路由契约校验测试."""
 
 from qqmusic_api.modules.singer import TabType
-from web.src.routing.route_types import PUBLIC_60, AuthPolicy, HttpMethod, ParamOverride, ParamSource, WebRoute
+from web.src.routing.route_types import (
+    PUBLIC_60,
+    AuthPolicy,
+    CachePolicy,
+    HttpMethod,
+    ParamOverride,
+    ParamSource,
+    WebRoute,
+)
 from web.src.routing.router_factory import validate_routes
 
 
@@ -24,6 +32,37 @@ def test_unsupported_auto_query_param_rejected() -> None:
     errors = validate_routes((route,))
 
     assert any("不能自动表达" in error for error in errors)
+
+
+def test_public_route_cannot_vary_cache_by_credential() -> None:
+    """测试公开路由不能按凭证隔离缓存."""
+    route = WebRoute(
+        module="search",
+        method="get_hotkey",
+        path="/search/hotkey",
+        response_model=dict,
+        cache=CachePolicy(ttl=60, vary_by_credential=True),
+    )
+
+    errors = validate_routes((route,))
+
+    assert any("公开路由不能按凭证隔离缓存" in error for error in errors)
+
+
+def test_auth_route_can_use_credential_scoped_cache() -> None:
+    """测试认证路由可以使用按账号隔离的缓存."""
+    route = WebRoute(
+        module="search",
+        method="get_hotkey",
+        path="/search/hotkey",
+        response_model=dict,
+        auth=AuthPolicy.OPTIONAL,
+        cache=CachePolicy(ttl=60, vary_by_credential=True),
+    )
+
+    errors = validate_routes((route,))
+
+    assert not any("缓存" in error for error in errors)
 
 
 def test_auth_cache_conflict_rejected() -> None:

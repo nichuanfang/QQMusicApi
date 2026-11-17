@@ -5,7 +5,7 @@ from typing import Any
 from qqmusic_api.models.search import SearchSelector
 from qqmusic_api.modules.search import SearchApi, SearchType
 
-from ..routing.route_types import PUBLIC_60, PUBLIC_600, WebRoute
+from ..routing.route_types import PUBLIC_60, PUBLIC_600, AuthPolicy, CachePolicy, WebRoute
 from ._helpers import Q, R
 
 SEARCH_BY_TYPE = (
@@ -34,6 +34,7 @@ ROUTES: tuple[WebRoute, ...] = (
         SearchApi.search_by_type,
         "/search/search_by_type",
         params=SEARCH_BY_TYPE,
-        cache=PUBLIC_60,
+        auth=AuthPolicy.OPTIONAL,
+        cache=CachePolicy(ttl=60, vary_by_credential=True),
     ),
 )

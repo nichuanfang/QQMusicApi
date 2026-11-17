@@ -14,7 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import qqmusic_api
 from qqmusic_api.core.engine import RequestEngine
-from qqmusic_api.core.exceptions import BaseApiException
+from qqmusic_api.core.exceptions import BaseApiException, RatelimitedError
 
 from . import modules  # noqa: F401
 from .core.cache import MemoryBackend, RedisBackend
@@ -25,6 +25,7 @@ from .core.credential_store import ACCOUNT_CONFIG_FILE, CredentialStore, load_ac
 from .core.deps import WebServices
 from .core.error_mapping import HTTP_ERROR_MESSAGES as _HTTP_ERROR_MESSAGES
 from .core.error_mapping import api_exception_status_code as _base_api_exception_status_code
+from .core.error_mapping import ratelimited_error_details
 from .core.response import ErrorResponse, error_response
 from .core.security import apply_security_middleware, configure_security
 from .routes import ROUTES
@@ -189,6 +190,9 @@ def create_app() -> FastAPI:
     @app.exception_handler(BaseApiException)
     async def _handle_base_api_exception(_request: Request, exc: BaseApiException) -> JSONResponse:
         status_code = _base_api_exception_status_code(exc)
+        if isinstance(exc, RatelimitedError):
+            data, headers = ratelimited_error_details(exc)
+            return error_response(status_code=status_code, msg=str(exc), data=data, headers=headers)
         if status_code < 500:
             return error_response(status_code=status_code, msg=str(exc))
         logger.error("上游请求失败: %d", status_code, exc_info=exc)

@@ -16,6 +16,7 @@ from qqmusic_api.core.exceptions import (
     CredentialRefreshError,
     LoginError,
     NetworkError,
+    RatelimitedError,
     TimeoutNetworkError,
 )
 from qqmusic_api.core.request import BaseRequest, CgiRequest, HttpRequest
@@ -31,6 +32,7 @@ from web.src.core.credential_store import CredentialStore
 from web.src.core.deps import WebServices, get_engine
 from web.src.core.response import ApiResponse
 from web.src.routes import ROUTES
+from web.src.routing import executor as route_executor
 from web.src.routing.executor import execute_route
 from web.src.routing.modules import MODULE_TYPES, create_module
 from web.src.routing.route_types import RouteContext, WebRoute
@@ -342,6 +344,88 @@ async def test_cached_route_skips_engine_after_first_result() -> None:
 
     await execute_route(context)
     await execute_route(context)
+
+    assert len(engine.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_by_type_sends_caller_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试歌曲搜索把调用方登录态传给上游."""
+    monkeypatch.setattr(route_executor, "_GET_RATE_LIMIT_RETRY_DELAYS", ())
+    engine = RecordingEngine()
+    credential = Credential(musicid=12345, musickey="key")
+    context = _route_context(
+        _resolved_route("/search/search_by_type"),
+        engine,
+        params={"keyword": "周杰伦"},
+        credential=credential,
+    )
+
+    await execute_route(context)
+
+    assert engine.calls[0][1].credential.musicid == 12345
+
+
+@pytest.mark.asyncio
+async def test_search_by_type_cache_does_not_cross_accounts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试歌曲搜索缓存不跨账号复用."""
+    monkeypatch.setattr(route_executor, "_GET_RATE_LIMIT_RETRY_DELAYS", ())
+    engine = RecordingEngine()
+    cache = MemoryBackend()
+    first = _route_context(
+        _resolved_route("/search/search_by_type"),
+        engine,
+        params={"keyword": "周杰伦"},
+        cache=cache,
+        credential=Credential(musicid=1, musickey="a"),
+    )
+    second = _route_context(
+        _resolved_route("/search/search_by_type"),
+        engine,
+        params={"keyword": "周杰伦"},
+        cache=cache,
+        credential=Credential(musicid=2, musickey="b"),
+    )
+
+    await execute_route(first)
+    await execute_route(first)
+    await execute_route(second)
+
+    assert len(engine.calls) == 2
+    assert engine.calls[0][1].credential.musicid == 1
+    assert engine.calls[1][1].credential.musicid == 2
+
+
+@pytest.mark.asyncio
+async def test_search_rate_limit_without_feedback_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试没有安全验证链接的搜索限流会再试一次."""
+    monkeypatch.setattr(route_executor, "_GET_RATE_LIMIT_RETRY_DELAYS", (0.0,))
+    engine = ScriptedEngine([RatelimitedError(code=2001), RatelimitedError(code=2001)])
+    context = _route_context(
+        _resolved_route("/search/search_by_type"),
+        engine,
+        params={"keyword": "周杰伦"},
+    )
+
+    with pytest.raises(RatelimitedError):
+        await execute_route(context)
+
+    assert len(engine.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_search_rate_limit_with_feedback_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试带安全验证链接的搜索限流不重试."""
+    monkeypatch.setattr(route_executor, "_GET_RATE_LIMIT_RETRY_DELAYS", (0.0,))
+    engine = ScriptedEngine([RatelimitedError(code=2001, data={"feedbackURL": "https://example.test/verify"})])
+    context = _route_context(
+        _resolved_route("/search/search_by_type"),
+        engine,
+        params={"keyword": "周杰伦"},
+    )
+
+    with pytest.raises(RatelimitedError):
+        await execute_route(context)
 
     assert len(engine.calls) == 1
 

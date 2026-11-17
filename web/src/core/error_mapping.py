@@ -4,6 +4,8 @@ Note:
     独立成模块是为了让路由执行器复用状态码映射, 避免 executor 反向 import app 造成循环依赖.
 """
 
+from typing import Any
+
 from qqmusic_api.core.exceptions import (
     ApiDataError,
     BaseApiException,
@@ -28,6 +30,18 @@ HTTP_ERROR_MESSAGES: dict[int, str] = {
     503: "上游服务暂不可用",
     504: "上游服务响应超时",
 }
+
+
+def ratelimited_error_details(exc: RatelimitedError) -> tuple[dict[str, Any], dict[str, str] | None]:
+    """构造限流响应的可观察详情.
+
+    有安全验证链接时不再建议重试. 没有验证链接时给出短 Retry-After.
+    """
+    data: dict[str, Any] = {"upstream_code": exc.code}
+    if exc.feedback_url:
+        data["feedback_url"] = exc.feedback_url
+        return data, None
+    return data, {"Retry-After": "2"}
 
 
 def api_exception_status_code(exc: BaseApiException) -> int:

@@ -142,11 +142,17 @@ class RedisBackend:
         await self._client.aclose()
 
 
-def make_cache_key(path: str, kwargs: dict[str, Any]) -> str:
-    """基于路径与请求参数生成缓存键."""
+def make_cache_key(path: str, kwargs: dict[str, Any], *, credential_id: str = "") -> str:
+    """基于路径与请求参数生成缓存键.
+
+    credential_id 非空时把账号身份纳入键, 且只保存摘要, 不保存凭证本身.
+    """
     serialized = orjson.dumps(kwargs, option=orjson.OPT_SORT_KEYS, default=str)
     param_hash = hashlib.sha256(serialized).hexdigest()[:16]
-    return f"{path}:{param_hash}"
+    if not credential_id:
+        return f"{path}:{param_hash}"
+    identity = hashlib.sha256(credential_id.encode()).hexdigest()[:16]
+    return f"{path}:{identity}:{param_hash}"
 
 
 def make_failure_key(cache_key: str) -> str:
